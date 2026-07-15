@@ -236,7 +236,7 @@ def main() -> None:
         prog="ai-skill-scanner",
         description="Standalone scanner for public AI skills with dynamic signatures and SHA verification."
     )
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--github-url", metavar="URL", help="Public GitHub repository URL to clone and scan")
     group.add_argument("--path", metavar="PATH", help="Local directory or single file to scan")
     parser.add_argument("--output", metavar="FILE", default="skill_scan_report.json",
@@ -251,6 +251,10 @@ def main() -> None:
         load_signatures_from_repo()
         print("Signatures updated and verified successfully.")
         return
+
+    # Require either --github-url or --path when not updating signatures
+    if not args.github_url and not args.path:
+        parser.error("one of the arguments --github-url --path is required")
 
     active_patterns = load_signatures_from_repo()
 
