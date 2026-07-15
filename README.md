@@ -70,6 +70,18 @@ See the JSON report for per-finding severity (high/medium/low), line numbers, sn
 
 The design follows defense-in-depth principles used in modern SAST tools and recent AI agent security scanners. It is intentionally static. Pair with container runtime controls and optional dynamic tracing for production use.
 
+## Signature Updates
+
+The scanner supports an optional --update-signatures flag (planned for full implementation in v1.1). When present it will pull the latest patterns from the ai-skill-signatures repository using git shallow clone into a local signatures/ cache. The git pull update model keeps the scanner binary stable while allowing independent evolution of detection rules.
+
+Example:
+
+```bash
+ai-skill-scanner --path /my/skills --update-signatures --output report.json
+```
+
+See the ai-skill-signatures repository for the manifest version comparison logic.
+
 ## GitHub Actions Integration
 
 Add the following workflow to scan skills on pull requests or schedule:
