@@ -10,18 +10,18 @@ Detects code execution primitives, data exfiltration callbacks, prompt injection
 
 Our automation is powered by GitHub Actions. All workflows are in `.github/workflows/`.
 
-### CI & Quality
-<span style="background:#6366f1;color:white;padding:4px 12px;border-radius:9999px;font-size:0.75rem;display:inline-block;margin:2px 4px 2px 0;">ci.yml</span> Linting • Self-scan • Docker build • Weekly scheduled scans  
+**CI & Quality**  
+🚀 **ci.yml** — Linting • Self-scan • Docker build • Weekly scheduled scans  
 [![CI](https://github.com/cftcai/ai-skill-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/cftcai/ai-skill-scanner/actions/workflows/ci.yml)
 
-### Deployment
-<span style="background:#22c55e;color:white;padding:4px 12px;border-radius:9999px;font-size:0.75rem;display:inline-block;margin:2px 4px 2px 0;">pages.yml</span> (ai-skill-scanner-web) Static site deployment to GitHub Pages
+**Deployment**  
+📦 **pages.yml** (ai-skill-scanner-web) — Static site deployment to GitHub Pages
 
-### Demo & Security
-<span style="background:#f59e0b;color:white;padding:4px 12px;border-radius:9999px;font-size:0.75rem;display:inline-block;margin:2px 4px 2px 0;">oidc-demo.yml</span> OIDC token exchange example (no long-lived secrets, demonstrates audience claims)
+**Demo & Security**  
+🔐 **oidc-demo.yml** — OIDC token exchange example (no long-lived secrets, demonstrates audience claims)
 
-### Testing
-Uses the canonical **mock malicious_skill.py** fixture via `test_malicious_skill_fixture`  
+**Testing**  
+🧪 Uses the canonical **mock malicious_skill.py** fixture via `test_malicious_skill_fixture`  
 This is the EICAR-equivalent test case for high-severity detection (dangerous execution, exfiltration, prompt injection, obfuscation).
 
 **Best practices followed**  
