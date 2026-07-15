@@ -5,8 +5,7 @@ This file intentionally contains multiple high-severity patterns that the scanne
 should flag: dangerous execution, exfiltration callback, prompt injection language,
 and obfuscation.
 
-Similar to the EICAR test file for antivirus, this file exists solely to verify
-that the scanner correctly identifies and reports malicious content.
+This file exists solely to verify that the scanner correctly identifies and reports malicious content.
 """
 
 import subprocess
