@@ -4,6 +4,8 @@ Standalone security scanner for publicly available or downloaded AI agent skills
 
 Detects code execution primitives, data exfiltration callbacks, prompt injection in skill definitions, obfuscated payloads, and supply chain risks before integration into agent runtimes.
 
+**Web frontend demo**: https://github.com/cftcai/ai-skill-scanner-web (instant demo with the mock malicious skill fixture)
+
 ## Why This Exists
 
 Public AI skills (Python modules, SKILL.md prompt files, tool definitions) represent a growing attack surface. Malicious or compromised skills can execute arbitrary code, exfiltrate agent memory or environment variables via callbacks, poison prompts, or persist via file system changes. This tool provides a fast, local, self-contained first line of defense.
