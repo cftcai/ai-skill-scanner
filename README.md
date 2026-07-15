@@ -4,7 +4,7 @@ Standalone security scanner for publicly available or downloaded AI agent skills
 
 Detects code execution primitives, data exfiltration callbacks, prompt injection in skill definitions, obfuscated payloads, and supply chain risks before integration into agent runtimes.
 
-**Web frontend demo**: https://github.com/cftcai/ai-skill-scanner-web (instant demo with the mock malicious skill fixture)
+**Web interface**: https://github.com/cftcai/ai-skill-scanner-web
 
 ## GitHub Actions
 
@@ -17,16 +17,16 @@ Our automation is powered by GitHub Actions. All workflows are in `.github/workf
 **Deployment**  
 📦 **pages.yml** (ai-skill-scanner-web) — Static site deployment to GitHub Pages
 
-**Demo & Security**  
+**Security Examples**  
 🔐 **oidc-demo.yml** — OIDC token exchange example (no long-lived secrets, demonstrates audience claims)
 
 **Testing**  
 🧪 Uses the canonical **mock malicious_skill.py** fixture via `test_malicious_skill_fixture`  
-This is the EICAR-equivalent test case for high-severity detection (dangerous execution, exfiltration, prompt injection, obfuscation).
+This is the reference test case for high-severity detection (dangerous execution, exfiltration, prompt injection, obfuscation).
 
 **Best practices followed**  
 - Least-privilege permissions  
-- No long-lived secrets in OIDC demo  
+- No long-lived secrets in OIDC example  
 - Lightweight static workflows
 
 View all workflows → [Actions tab](https://github.com/cftcai/ai-skill-scanner/actions)
@@ -99,7 +99,7 @@ The design follows defense-in-depth principles used in modern SAST tools and rec
 
 ## Signature Updates
 
-The scanner supports an optional --update-signatures flag (planned for full implementation in v1.1). When present it will pull the latest patterns from the ai-skill-signatures repository using git shallow clone into a local signatures/ cache. The git pull update model keeps the scanner binary stable while allowing independent evolution of detection rules.
+The scanner supports an optional `--update-signatures` flag. When present it will pull the latest patterns from the ai-skill-signatures repository using git shallow clone into a local signatures/ cache. The git pull update model keeps the scanner binary stable while allowing independent evolution of detection rules.
 
 Example:
 
