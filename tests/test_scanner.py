@@ -1,5 +1,5 @@
 """Basic tests for ai-skill-scanner core functionality.
-Includes the EICAR-style malicious_skill.py test fixture to verify detection
+Includes the mock malicious_skill.py test fixture to verify detection
 of dangerous execution, exfiltration, prompt injection, and obfuscation.
 """
 
@@ -63,10 +63,10 @@ def test_high_entropy_obfuscation():
         report = json.loads((Path(tmp)/"r.json").read_text())
         assert any(f["type"] == "high_entropy_obfuscation" for f in report["findings"])
 
-def test_malicious_skill_eicar_style():
-    """EICAR-style test: scan the dedicated malicious_skill.py fixture.
+def test_malicious_skill_fixture():
+    """Scan the dedicated malicious_skill.py fixture.
     Verifies the scanner detects multiple high-severity categories in one file.
-    This file is the canonical 'bad skill' for manual and automated testing.
+    This file serves as the canonical test case for malicious skill detection.
     """
     malicious_path = Path(__file__).parent / "malicious_skill.py"
     assert malicious_path.exists(), "malicious_skill.py fixture missing"
