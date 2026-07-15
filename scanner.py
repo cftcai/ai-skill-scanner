@@ -107,7 +107,7 @@ def load_signatures_from_repo() -> list[re.Pattern[str]]:
 
         patterns: list[re.Pattern[str]] = []
         for sig_file in manifest.get("signatures", []):
-            sig_path = SIGNATURES_CACHE / "signatures" / sig_file
+            sig_path = SIGNATURES_CACHE / sig_file
             if not sig_path.exists():
                 continue
             try:
