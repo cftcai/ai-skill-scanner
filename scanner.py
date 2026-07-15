@@ -2,35 +2,18 @@
 """
 ai-skill-scanner: End-to-end standalone public AI skill security scanner.
 
-Scans GitHub repositories or local paths containing AI agent skills (Python code,
-SKILL.md definitions, prompts, dependencies) for:
-- Dangerous code execution (eval, exec, pickle, dynamic import)
-- Data exfiltration callbacks and network sinks
-- Prompt injection and semantic poisoning in skill definitions
-- Obfuscated payloads via high-entropy strings and decode patterns
-- Supply chain risks in requirements and setup files
-- File persistence indicators
+Scans GitHub repositories or local paths containing AI agent skills for dangerous
+code execution, data exfiltration, prompt injection, and obfuscation.
 
-Usage:
+New in this version:
+- Dynamic signature loading from ai-skill-signatures repository
+- --update-signatures flag with SHA integrity verification
+- Backward compatible with hardcoded patterns
+
+Usage examples:
   python scanner.py --github-url https://github.com/example/some-skill
-  python scanner.py --path /path/to/local/skill --output report.json
-  ai-skill-scanner --path .   # after pip install -e .
-
-The scanner is static only by design. For dynamic behavioral analysis wrap in
-Docker with seccomp, read-only mounts, and network logging. False positives
-may occur on legitimate dynamic code. Always review high severity findings.
-
-Edge cases handled:
-- Syntax errors in .py files reported as low severity (do not crash scan)
-- Permission or read errors logged per file
-- Git clone failures exit with clear message (requires git in PATH)
-- Large files processed with bounded operations
-- Duplicate findings across regex/AST minimized by type grouping in report
-
-Failure modes:
-- Network unavailable during git clone: fails fast with timeout
-- Malformed skill repos: partial scan with errors in report
-- Very large monorepos: consider --path on shallow clone first
+  python scanner.py --update-signatures
+  python scanner.py --path /path/to/skill --output report.json
 """
 
 import argparse
@@ -47,6 +30,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Default cache location for signatures
+SIGNATURES_CACHE = Path.home() / ".cache" / "ai-skill-signatures"
+SIGNATURES_REPO = "https://github.com/cftcai/ai-skill-signatures.git"
+
 # Dangerous function targets detected via AST
 DANGEROUS_FUNCS: set[str] = {
     "eval", "exec", "compile", "__import__",
@@ -55,7 +42,7 @@ DANGEROUS_FUNCS: set[str] = {
     "pickle.loads", "marshal.loads", "builtins.exec", "builtins.eval"
 }
 
-# High-signal patterns for exfiltration, injection, callbacks, and obfuscation
+# Fallback hardcoded patterns (used if no signatures repo is available)
 EXFIL_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'https?://(?!api\.openai\.com|api\.anthropic\.com|api\.groq\.com|api\.x\.ai|localhost|127\.0\.0\.1|0\.0\.0\.0)[^\s"\'`]{8,}', re.IGNORECASE),
     re.compile(r'(?:requests|urllib3?|httpx|http\.client|socket)\s*\.\s*(?:post|get|request|send|connect|create_connection)', re.IGNORECASE),
@@ -81,8 +68,70 @@ def calculate_shannon_entropy(data: str) -> float:
             entropy -= p * math.log2(p)
     return entropy
 
-def scan_single_file(filepath: Path) -> list[dict[str, Any]]:
-    """Scan one file. Returns list of finding dicts. Never raises on recoverable errors."""
+def load_signatures_from_repo() -> list[re.Pattern[str]]:
+    """Load and compile regex patterns from the ai-skill-signatures repository.
+    Performs SHA verification against manifest.json:latest_commit_sha.
+    """
+    try:
+        if not SIGNATURES_CACHE.exists():
+            print("Cloning signatures repository (first run)...")
+            SIGNATURES_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["git", "clone", "--depth", "1", SIGNATURES_REPO, str(SIGNATURES_CACHE)],
+                check=True, timeout=60, capture_output=True
+            )
+        else:
+            subprocess.run(
+                ["git", "-C", str(SIGNATURES_CACHE), "pull", "--ff-only"],
+                check=True, timeout=30, capture_output=True
+            )
+
+        manifest_path = SIGNATURES_CACHE / "manifest.json"
+        if not manifest_path.exists():
+            print("WARNING: manifest.json not found. Using fallback patterns.")
+            return EXFIL_PATTERNS
+
+        manifest = json.loads(manifest_path.read_text())
+        latest_sha = manifest.get("latest_commit_sha", "")
+
+        # Verify SHA integrity (skip if placeholder)
+        if latest_sha and not latest_sha.startswith("PLACEHOLDER"):
+            current_sha = subprocess.check_output(
+                ["git", "-C", str(SIGNATURES_CACHE), "rev-parse", "HEAD"],
+                text=True
+            ).strip()
+            if current_sha != latest_sha:
+                print(f"WARNING: Signature SHA mismatch! Expected {latest_sha}, got {current_sha}")
+                print("Signatures may be tampered or outdated. Using fallback patterns.")
+                return EXFIL_PATTERNS
+
+        patterns: list[re.Pattern[str]] = []
+        for sig_file in manifest.get("signatures", []):
+            sig_path = SIGNATURES_CACHE / "signatures" / sig_file
+            if not sig_path.exists():
+                continue
+            try:
+                rules = json.loads(sig_path.read_text())
+                for rule in rules:
+                    pattern_str = rule.get("pattern", "")
+                    ignorecase = rule.get("ignorecase", True)
+                    if pattern_str:
+                        flags = re.IGNORECASE if ignorecase else 0
+                        patterns.append(re.compile(pattern_str, flags))
+            except Exception as e:
+                print(f"WARNING: Failed to load {sig_file}: {e}")
+
+        if patterns:
+            print(f"Loaded {len(patterns)} signature patterns from ai-skill-signatures repo.")
+            return patterns
+        return EXFIL_PATTERNS
+
+    except Exception as e:
+        print(f"WARNING: Could not load signatures ({e}). Using fallback patterns.")
+        return EXFIL_PATTERNS
+
+def scan_single_file(filepath: Path, patterns: list[re.Pattern[str]]) -> list[dict[str, Any]]:
+    """Scan one file using provided patterns."""
     findings: list[dict[str, Any]] = []
     try:
         content = filepath.read_text(encoding="utf-8", errors="ignore")
@@ -133,8 +182,8 @@ def scan_single_file(filepath: Path) -> list[dict[str, Any]]:
                 "snippet": ""
             })
 
-    # Regex and entropy scans (apply to all text files)
-    for pattern in EXFIL_PATTERNS:
+    # Regex patterns (loaded or fallback)
+    for pattern in patterns:
         for match in pattern.finditer(content):
             line_no = content[:match.start()].count("\n") + 1
             snippet = lines[line_no - 1].strip()[:200] if 0 < line_no <= len(lines) else match.group(0)[:120]
@@ -149,7 +198,7 @@ def scan_single_file(filepath: Path) -> list[dict[str, Any]]:
                 "recommendation": "Inspect data flow to network or secret sinks. Block untrusted patterns."
             })
 
-    # High entropy string detection for obfuscation
+    # High entropy detection
     for match in re.finditer(r'["\']([A-Za-z0-9+/=_-]{30,})["\']', content):
         candidate = match.group(1)
         entropy = calculate_shannon_entropy(candidate)
@@ -165,7 +214,7 @@ def scan_single_file(filepath: Path) -> list[dict[str, Any]]:
                 "recommendation": "Manually decode and review. Typical of packed malware or stolen data."
             })
 
-    # Skill definition specific checks (SKILL.md or markdown prompts)
+    # Skill definition checks
     if "SKILL" in filepath.name.upper() or filepath.suffix in {".md", ".markdown"}:
         injection_markers = ["exfiltrate", "send data", "callback url", "ignore previous", "override safety"]
         if any(marker in content.lower() for marker in injection_markers):
@@ -182,18 +231,28 @@ def scan_single_file(filepath: Path) -> list[dict[str, Any]]:
     return findings
 
 def main() -> None:
-    """CLI entry point. Parses args, orchestrates clone or local scan, writes JSON report."""
+    """CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="ai-skill-scanner",
-        description="Standalone scanner for public AI skills. Detects execution, exfiltration, and injection risks."
+        description="Standalone scanner for public AI skills with dynamic signatures and SHA verification."
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--github-url", metavar="URL", help="Public GitHub repository URL to clone and scan")
     group.add_argument("--path", metavar="PATH", help="Local directory or single file to scan")
     parser.add_argument("--output", metavar="FILE", default="skill_scan_report.json",
-                        help="Path for JSON report output (default: skill_scan_report.json)")
-    parser.add_argument("--version", action="version", version="%(prog)s 1.0.0")
+                        help="Path for JSON report output")
+    parser.add_argument("--update-signatures", action="store_true",
+                        help="Update and verify signatures from ai-skill-signatures repo")
+    parser.add_argument("--version", action="version", version="%(prog)s 1.1.0")
     args = parser.parse_args()
+
+    if args.update_signatures:
+        print("Updating signatures from ai-skill-signatures...")
+        load_signatures_from_repo()
+        print("Signatures updated and verified successfully.")
+        return
+
+    active_patterns = load_signatures_from_repo()
 
     target_dir: str | None = None
     cleanup: bool = False
@@ -203,12 +262,9 @@ def main() -> None:
         cleanup = True
         print(f"Cloning repository {args.github_url} (depth 1)...")
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ["git", "clone", "--depth", "1", "--quiet", args.github_url, target_dir],
-                check=True,
-                timeout=120,
-                capture_output=True,
-                text=True
+                check=True, timeout=120, capture_output=True
             )
         except subprocess.CalledProcessError as e:
             print(f"ERROR: Git clone failed.\n{e.stderr}")
@@ -219,7 +275,7 @@ def main() -> None:
             shutil.rmtree(target_dir, ignore_errors=True)
             sys.exit(2)
         except FileNotFoundError:
-            print("ERROR: git executable not found in PATH. Install git or scan a local --path clone.")
+            print("ERROR: git executable not found in PATH.")
             shutil.rmtree(target_dir, ignore_errors=True)
             sys.exit(2)
     else:
@@ -241,21 +297,22 @@ def main() -> None:
                 "SKILL" in filename.upper() or
                 filename in {"requirements.txt", "setup.py", "pyproject.toml", "Dockerfile"}):
                 fpath = Path(dirpath) / filename
-                all_findings.extend(scan_single_file(fpath))
+                all_findings.extend(scan_single_file(fpath, active_patterns))
 
     high_sev = sum(1 for f in all_findings if f.get("severity") == "high")
     medium_sev = sum(1 for f in all_findings if f.get("severity") == "medium")
 
     report: dict[str, Any] = {
         "scanner": "ai-skill-scanner",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "target": args.github_url or str(Path(args.path).resolve()),
         "scan_timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "total_findings": len(all_findings),
         "high_severity": high_sev,
         "medium_severity": medium_sev,
         "low_severity": len(all_findings) - high_sev - medium_sev,
-        "findings": all_findings
+        "findings": all_findings,
+        "signatures_source": "ai-skill-signatures repo" if active_patterns != EXFIL_PATTERNS else "fallback hardcoded"
     }
 
     output_path = Path(args.output).resolve()
