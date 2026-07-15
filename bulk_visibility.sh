@@ -1,6 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # bulk_visibility.sh
 # Advanced script to change GitHub repository visibility from private to public in bulk.
+# Supports --make-public mode that also adds standard topics.
 # Features: dependency checks, auth verification, dry-run, per-repo error handling,
 # logging, confirmation prompt, visibility pre-check, and colored output.
 #
@@ -11,6 +12,7 @@
 # Usage:
 #   ./bulk_visibility.sh --dry-run
 #   ./bulk_visibility.sh --yes
+#   ./bulk_visibility.sh --make-public
 #   ./bulk_visibility.sh --owner cftcai --repos "ai-skill-scanner,ai-skill-signatures"
 
 set -euo pipefail
@@ -21,6 +23,7 @@ REPO_LIST="${REPOS:-ai-skill-scanner,ai-skill-signatures}"
 LOG_FILE="visibility_change_$(date +%Y%m%d_%H%M%S).log"
 DRY_RUN=false
 AUTO_CONFIRM=false
+MAKE_PUBLIC=false
 
 # Colors for output (portable)
 RED='\033[0;31m'
@@ -46,11 +49,8 @@ Options:
   --repos "r1,r2,r3"     Comma separated list of repositories
   --dry-run              Show what would be done without changes
   --yes                  Skip confirmation prompt
+  --make-public          Change visibility to public and add standard topics (ai-security, agent-skills, sast)
   -h, --help             Show this help
-
-Examples:
-  $0 --dry-run
-  $0 --yes --repos "ai-skill-scanner,ai-skill-signatures"
 EOF
     exit 0
 }
@@ -62,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --repos) REPO_LIST="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         --yes) AUTO_CONFIRM=true; shift ;;
+        --make-public) MAKE_PUBLIC=true; shift ;;
         -h|--help) usage ;;
         *) echo "Unknown option: $1"; usage ;;
     esac
@@ -74,6 +75,7 @@ echo "=== GitHub Bulk Visibility Changer ==="
 echo "Owner: $OWNER"
 echo "Repositories: ${REPOS[*]}"
 echo "Dry run: $DRY_RUN"
+echo "Make public + topics: $MAKE_PUBLIC"
 echo "Log file: $LOG_FILE"
 echo
 
@@ -84,7 +86,6 @@ if ! gh auth status >/dev/null 2>&1; then
     error_exit "Not authenticated with gh. Run: gh auth login --scopes repo"
 fi
 
-# Verify token has repo scope (basic check via API call)
 if ! gh api user --jq '.login' >/dev/null 2>&1; then
     error_exit "GitHub token lacks required permissions. Re-authenticate with repo scope."
 fi
@@ -125,6 +126,9 @@ for repo in "${REPOS[@]}"; do
     
     if $DRY_RUN; then
         log "${YELLOW}[DRY RUN] Would change ${full_name} from ${current_vis} to public${NC}"
+        if $MAKE_PUBLIC; then
+            log "${YELLOW}[DRY RUN] Would also add topics ai-security,agent-skills,sast${NC}"
+        fi
         ((SUCCESS_COUNT++))
         continue
     fi
@@ -133,6 +137,14 @@ for repo in "${REPOS[@]}"; do
     if gh repo edit "$full_name" --visibility public 2>&1 | tee -a "$LOG_FILE"; then
         log "${GREEN}Successfully changed ${full_name} to public.${NC}"
         ((SUCCESS_COUNT++))
+        
+        if $MAKE_PUBLIC; then
+            if gh repo edit "$full_name" --add-topic "ai-security,agent-skills,sast" 2>&1 | tee -a "$LOG_FILE"; then
+                log "${GREEN}Added standard topics to ${full_name}.${NC}"
+            else
+                log "${YELLOW}WARNING: Failed to add topics to ${full_name}.${NC}"
+            fi
+        fi
     else
         log "${RED}Failed to change visibility for ${full_name}.${NC}"
         ((FAIL_COUNT++))
