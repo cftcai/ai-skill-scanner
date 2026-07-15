@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-skill-scanner"
+version = "1.0.0"
+description = "Standalone scanner for public AI agent skills. Detects code execution risks, exfiltration callbacks, prompt injection, obfuscation, and supply chain threats."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "David Hakala", email = "contact@example.com"}
+]
+keywords = ["ai", "security", "scanner", "skills", "agent", "prompt-injection", "exfiltration"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.scripts]
+ai-skill-scanner = "scanner:main"
+
+[project.urls]
+Homepage = "https://github.com/cftcai/ai-skill-scanner"
+Repository = "https://github.com/cftcai/ai-skill-scanner"
+Issues = "https://github.com/cftcai/ai-skill-scanner/issues"
+
+[tool.setuptools]
+py-modules = ["scanner"]
