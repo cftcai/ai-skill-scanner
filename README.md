@@ -6,6 +6,31 @@ Detects code execution primitives, data exfiltration callbacks, prompt injection
 
 **Web frontend demo**: https://github.com/cftcai/ai-skill-scanner-web (instant demo with the mock malicious skill fixture)
 
+## GitHub Actions
+
+Our automation is powered by GitHub Actions. All workflows are in `.github/workflows/`.
+
+### CI & Quality
+<span style="background:#6366f1;color:white;padding:4px 12px;border-radius:9999px;font-size:0.75rem;display:inline-block;margin:2px 4px 2px 0;">ci.yml</span> Linting • Self-scan • Docker build • Weekly scheduled scans  
+[![CI](https://github.com/cftcai/ai-skill-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/cftcai/ai-skill-scanner/actions/workflows/ci.yml)
+
+### Deployment
+<span style="background:#22c55e;color:white;padding:4px 12px;border-radius:9999px;font-size:0.75rem;display:inline-block;margin:2px 4px 2px 0;">pages.yml</span> (ai-skill-scanner-web) Static site deployment to GitHub Pages
+
+### Demo & Security
+<span style="background:#f59e0b;color:white;padding:4px 12px;border-radius:9999px;font-size:0.75rem;display:inline-block;margin:2px 4px 2px 0;">oidc-demo.yml</span> OIDC token exchange example (no long-lived secrets, demonstrates audience claims)
+
+### Testing
+Uses the canonical **mock malicious_skill.py** fixture via `test_malicious_skill_fixture`  
+This is the EICAR-equivalent test case for high-severity detection (dangerous execution, exfiltration, prompt injection, obfuscation).
+
+**Best practices followed**  
+- Least-privilege permissions  
+- No long-lived secrets in OIDC demo  
+- Lightweight static workflows
+
+View all workflows → [Actions tab](https://github.com/cftcai/ai-skill-scanner/actions)
+
 ## Why This Exists
 
 Public AI skills (Python modules, SKILL.md prompt files, tool definitions) represent a growing attack surface. Malicious or compromised skills can execute arbitrary code, exfiltrate agent memory or environment variables via callbacks, poison prompts, or persist via file system changes. This tool provides a fast, local, self-contained first line of defense.
