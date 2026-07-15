@@ -1,0 +1,48 @@
+name: CI - Skill Scanner
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    # Weekly scan of the scanner itself and example skills
+    - cron: '0 6 * * 1'
+
+jobs:
+  lint-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install editable package
+        run: pip install -e .
+
+      - name: Syntax and import check
+        run: python -c "import scanner; print('Import successful')"
+
+      - name: Self-scan of repository
+        run: |
+          ai-skill-scanner --path . --output self-scan-report.json
+          cat self-scan-report.json | head -n 50
+
+      - name: Upload scan report
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-scan-report
+          path: self-scan-report.json
+          retention-days: 30
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t ai-skill-scanner:test .
+      - name: Test Docker run (help)
+        run: docker run --rm ai-skill-scanner:test --help
