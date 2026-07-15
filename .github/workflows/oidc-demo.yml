@@ -1,0 +1,27 @@
+name: OIDC Demo - Token Exchange without Secrets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # Required for OIDC token request
+  contents: read
+
+jobs:
+  demo-oidc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request OIDC token
+        id: oidc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('https://example.com/audience');
+            core.setOutput('oidc_token', token ? 'present (length ' + token.length + ')' : 'missing');
+            console.log('OIDC token audience claim requested successfully. No long-lived secret used.');
+
+      - name: Show token status (demo only)
+        run: |
+          echo "OIDC token status: ${{ steps.oidc.outputs.oidc_token }}"
+          echo "This demonstrates GitHub OIDC federated identity without storing any secrets in the repository."
+          echo "In real use replace the audience with your cloud provider (AWS, Azure, GCP) and exchange the token for temporary credentials."
