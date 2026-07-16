@@ -7,14 +7,15 @@
 - feat(scanner): SARIF 2.1.0 output via `--format sarif`; CI validates + publishes the SARIF artifact, with a documented `upload-sarif` step for downstream code scanning (#3)
 - fix(scanner): findings now use repo-relative paths (no absolute host-path leak)
 - chore: single `__version__` source (1.2.0), aligned across CLI and report
+- feat(scanner): client-side signature pinning replaces the placebo manifest SHA check — fetched rules are trusted only when HEAD matches `PINNED_SIGNATURES_SHA`; adds `--signatures-sha`, `--allow-unpinned`, and `--update-signatures` re-pin reporting (#4)
 
 ## Completed (2026-07-15)
 - feat(workflow): scan-url.yml added for lightweight web backend (workflow_dispatch with url input)
 - GitHub Actions section reorganized; web frontend UX improved
 
 ## In Progress / Next
-- feat(scanner): client-side signature pinning to replace the placebo SHA check (#4) — pin the post-merge ai-skill-signatures main SHA
 - Deeper detection: import/alias resolution (`from os import system`), taint tracking to cut dual-use (env/subprocess) noise
+- Automate the signature re-pin (CI opens a PR bumping `PINNED_SIGNATURES_SHA` when ai-skill-signatures main advances)
 
 ## Not Done
 - Make repositories public + add topics (use bulk script --make-public after validation)

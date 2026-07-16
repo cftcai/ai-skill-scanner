@@ -105,17 +105,23 @@ See the JSON report for per-finding severity (high/medium/low), line numbers, sn
 
 The design follows defense-in-depth principles used in modern SAST tools and recent AI agent security scanners. It is intentionally static. Pair with container runtime controls and optional dynamic tracing for production use.
 
-## Signature Updates
+## Signature Updates and Client-Side Pinning
 
-The scanner supports an optional `--update-signatures` flag. When present it will pull the latest patterns from the ai-skill-signatures repository using git shallow clone into a local signatures/ cache. The git pull update model keeps the scanner binary stable while allowing independent evolution of detection rules.
+Detection rules live in the separate [ai-skill-signatures](https://github.com/cftcai/ai-skill-signatures) repository. The scanner shallow-clones them into a local cache (`~/.cache/ai-skill-signatures`) and refreshes with `git pull` on each run, so rules evolve independently of the scanner.
 
-Example:
+Integrity is enforced by **client-side pinning** (trust-on-first-use). The scanner hard-codes `PINNED_SIGNATURES_SHA` — a signatures commit it trusts — and uses the fetched rules **only** when the cloned `HEAD` matches that pin. On a mismatch it refuses the fetched rules and falls back to the built-in patterns. The pin is held by the scanner, not read from the signatures repo, so a compromised upstream cannot vouch for itself (unlike a SHA stored inside the repo).
+
+Review and re-pin after a signatures release:
 
 ```bash
-ai-skill-scanner --path /my/skills --update-signatures --output report.json
+# Fetch and compare the fetched HEAD against the pin
+ai-skill-scanner --update-signatures
+# If the change is expected, set PINNED_SIGNATURES_SHA to the fetched HEAD
+# (or trust it for one run without editing the source):
+ai-skill-scanner --path /my/skills --signatures-sha <fetched-sha>
 ```
 
-See the ai-skill-signatures repository for the manifest version comparison logic.
+Use `--allow-unpinned` to skip verification entirely (not recommended).
 
 ## GitHub Actions Integration
 
