@@ -53,11 +53,14 @@ jobs:
       - name: Test Docker run (help)
         run: docker run --rm ai-skill-scanner:test --help
 
-  code-scanning:
+  sarif:
+    # Verifies the SARIF pipeline end to end and publishes the report as a
+    # build artifact. We intentionally do NOT upload this self-scan to code
+    # scanning: the repo ships a deliberately-malicious test fixture and the
+    # tool flags its own subprocess calls, so self-scan alerts are by-design
+    # noise. Downstream users scanning real skills should add the
+    # github/codeql-action/upload-sarif step shown in the README.
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -72,8 +75,19 @@ jobs:
       - name: Scan and emit SARIF
         run: python scanner.py --path . --format sarif --output ai-skill-scanner.sarif
 
-      - name: Upload SARIF to GitHub code scanning
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Validate SARIF structure
+        run: |
+          python - <<'PY'
+          import json
+          s = json.load(open("ai-skill-scanner.sarif"))
+          assert s["version"] == "2.1.0", s.get("version")
+          assert s["runs"][0]["tool"]["driver"]["name"] == "ai-skill-scanner"
+          print("SARIF OK:", len(s["runs"][0]["results"]), "results")
+          PY
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: ai-skill-scanner.sarif
-          category: ai-skill-scanner
+          name: ai-skill-scanner-sarif
+          path: ai-skill-scanner.sarif
+          retention-days: 30
