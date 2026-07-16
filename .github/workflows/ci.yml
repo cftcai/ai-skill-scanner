@@ -23,11 +23,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install editable package
-        run: pip install -e .
+      - name: Install package with dev extras
+        run: pip install -e ".[dev]"
 
-      - name: Install test dependencies
-        run: pip install pytest
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: mypy scanner.py
 
       - name: Syntax and import check
         run: python -c "import scanner; print('Import successful')"

@@ -4,14 +4,15 @@ of dangerous execution, exfiltration, prompt injection, and obfuscation.
 """
 
 import json
+import subprocess
+import sys
 import tempfile
 import types
 from pathlib import Path
-import subprocess
-import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import scanner  # noqa: E402
+
 
 def test_dangerous_call_detection():
     """Verify AST detects eval and subprocess patterns."""

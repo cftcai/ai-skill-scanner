@@ -3,21 +3,22 @@
 ai-skill-scanner: End-to-end standalone public AI skill security scanner.
 
 Scans GitHub repositories or local paths containing AI agent skills for dangerous
-code execution, data exfiltration, prompt injection, and obfuscation.
+code execution, data exfiltration, hardcoded secrets, supply-chain risks, prompt
+injection, and obfuscation. Emits JSON or SARIF.
 
-New in this version:
-- Dynamic signature loading from ai-skill-signatures repository
-- --update-signatures flag with SHA integrity verification
-- Backward compatible with hardcoded patterns
+Detection rules load dynamically from the ai-skill-signatures repository and are
+verified against a client-side pinned commit (trust-on-first-use); built-in
+rules are used when the pin does not verify or the repo is unavailable.
 
 Usage examples:
   python scanner.py --github-url https://github.com/example/some-skill
   python scanner.py --update-signatures
-  python scanner.py --path /path/to/skill --output report.json
+  python scanner.py --path /path/to/skill --output report.json --format sarif
 """
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import json
 import math
@@ -27,7 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -108,7 +109,9 @@ BUILTIN_RULES: list[Rule] = [
 # tuned for code; running them over documentation and packaging metadata (which
 # naturally discuss and contain these tokens) is the dominant false-positive
 # source. Such files still get the dedicated prompt-injection check below.
-PROSE_SUFFIXES: set[str] = {".md", ".markdown", ".txt", ".rst", ".toml", ".cfg", ".ini"}
+# .txt is intentionally NOT here: it is scanned as code, since a plain-text file
+# in a skill repo is a plausible payload carrier (and requirements.txt needs it).
+PROSE_SUFFIXES: set[str] = {".md", ".markdown", ".rst", ".toml", ".cfg", ".ini"}
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
 
@@ -184,14 +187,13 @@ def load_signatures_from_repo(pinned_sha: str | None = PINNED_SIGNATURES_SHA,
 
         # Reset the working tree to the trusted commit so a locally-modified
         # cache (files changed without moving HEAD) cannot inject rules.
+        # HEAD is already verified above; the checkout is defense-in-depth.
         if pin_active and not allow_unpinned:
-            try:
+            with contextlib.suppress(subprocess.SubprocessError, OSError):
                 subprocess.run(
                     ["git", "-C", str(SIGNATURES_CACHE), "checkout", "--force", str(pinned_sha)],
                     check=True, timeout=30, capture_output=True
                 )
-            except (subprocess.SubprocessError, OSError):
-                pass  # HEAD already verified above; checkout is defense-in-depth
 
         manifest_path = SIGNATURES_CACHE / "manifest.json"
         if not manifest_path.exists():
@@ -403,9 +405,12 @@ def scan_single_file(filepath: Path, rules: list[Rule],
             r"send\s+(?:the\s+|all\s+|your\s+)?(?:user|agent|memory|context|secrets?|history|environment)\b[^.\n]{0,40}\bto\b",
             r"reveal\s+(?:your\s+|the\s+)?(?:system\s+)?prompt",
         ]
-        marker = next((m for m in injection_markers if re.search(m, content, re.IGNORECASE)), None)
-        if marker:
+        hit = None
+        for marker in injection_markers:
             hit = re.search(marker, content, re.IGNORECASE)
+            if hit:
+                break
+        if hit:
             line_no = content[:hit.start()].count("\n") + 1
             findings.append({
                 "file": rel_path,
@@ -450,7 +455,7 @@ def to_sarif(report: dict[str, Any]) -> dict[str, Any]:
             message = f"[{rule_id}] {message}"
         snippet = f.get("snippet") or ""
         fingerprint = hashlib.sha1(
-            f"{f.get('file','')}:{start_line}:{f['type']}:{rule_id or ''}:{snippet}".encode("utf-8")
+            f"{f.get('file','')}:{start_line}:{f['type']}:{rule_id or ''}:{snippet}".encode()
         ).hexdigest()
         results.append({
             "ruleId": f["type"],
@@ -615,7 +620,7 @@ def main() -> None:
         "scanner": "ai-skill-scanner",
         "version": __version__,
         "target": args.github_url or args.path,
-        "scan_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "scan_timestamp_utc": datetime.now(UTC).isoformat(),
         "total_findings": len(all_findings),
         "high_severity": high_sev,
         "medium_severity": medium_sev,
