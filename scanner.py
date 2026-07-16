@@ -29,7 +29,15 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
+
+
+class Rule(NamedTuple):
+    """A compiled regex detection rule with its metadata."""
+    regex: "re.Pattern[str]"
+    id: str
+    severity: str
+    description: str
 
 __version__ = "1.2.0"
 
@@ -76,15 +84,24 @@ BENIGN_HOSTS = (
     r"opensource\.org|apache\.org|mozilla\.org"
 )
 
-# Fallback hardcoded patterns (used if no signatures repo is available)
-EXFIL_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r'https?://(?!(?:[\w-]+\.)*(?:' + BENIGN_HOSTS + r')|localhost|127\.0\.0\.1|0\.0\.0\.0)[^\s"\'`]{8,}', re.IGNORECASE),
-    re.compile(r'(?:requests|urllib3?|httpx|http\.client|socket)\s*\.\s*(?:post|get|request|send|connect|create_connection)', re.IGNORECASE),
-    re.compile(r'(?:os\.environ(?:\.get)?|os\.getenv|getenv|environ)\s*[\[(]\s*["\']?[A-Za-z_][A-Za-z0-9_]*', re.IGNORECASE),
-    re.compile(r'(?:ignore|disregard|override|forget|discard).*?(?:previous|all|system|prior|earlier|instructions|rules|policies|guidelines)', re.IGNORECASE),
-    re.compile(r'(?:exfiltrat|leak|steal|exfil|beacon|callback|phonehome|upload|transmit).*?(?:data|secret|key|token|env|memory|context|prompt|user|agent|history)', re.IGNORECASE),
-    re.compile(r'base64\.(?:b64encode|b64decode|standard_b64decode|urlsafe_b64decode)', re.IGNORECASE),
-    re.compile(r'marshal\.loads|zlib\.decompress|codecs\.decode.*rot', re.IGNORECASE),
+# Built-in detection rules (used when the signatures repo is unavailable or its
+# pin does not verify). Each rule carries an id, severity, and description that
+# flow through to findings, so results cite exactly which rule fired.
+BUILTIN_RULES: list[Rule] = [
+    Rule(re.compile(r'https?://(?!(?:[\w-]+\.)*(?:' + BENIGN_HOSTS + r')|localhost|127\.0\.0\.1|0\.0\.0\.0)[^\s"\'`]{8,}', re.IGNORECASE),
+         "BUILTIN-URL", "low", "Hardcoded URL to a non-allowlisted host that may receive exfiltrated data."),
+    Rule(re.compile(r'(?:requests|urllib3?|httpx|http\.client|socket)\s*\.\s*(?:post|get|request|send|connect|create_connection)', re.IGNORECASE),
+         "BUILTIN-NET", "medium", "Network call that could transmit secrets or agent state."),
+    Rule(re.compile(r'(?:os\.environ(?:\.get)?|os\.getenv|getenv|environ)\s*[\[(]\s*["\']?[A-Za-z_][A-Za-z0-9_]*', re.IGNORECASE),
+         "BUILTIN-ENV", "medium", "Environment-variable read (possible secret/credential access)."),
+    Rule(re.compile(r'(?:ignore|disregard|override|forget|discard).*?(?:previous|all|system|prior|earlier|instructions|rules|policies|guidelines)', re.IGNORECASE),
+         "BUILTIN-INJECT", "high", "Prompt-override phrasing attempting to bypass safety or force actions."),
+    Rule(re.compile(r'(?:exfiltrat|leak|steal|exfil|beacon|callback|phonehome|upload|transmit).*?(?:data|secret|key|token|env|memory|context|prompt|user|agent|history)', re.IGNORECASE),
+         "BUILTIN-EXFIL", "high", "Exfiltration / callback language targeting sensitive data."),
+    Rule(re.compile(r'base64\.(?:b64encode|b64decode|standard_b64decode|urlsafe_b64decode)', re.IGNORECASE),
+         "BUILTIN-B64", "medium", "Base64 encode/decode that may conceal a payload."),
+    Rule(re.compile(r'marshal\.loads|zlib\.decompress|codecs\.decode.*rot', re.IGNORECASE),
+         "BUILTIN-OBFUS", "high", "Obfuscated payload unpacking pattern (dropper / memory poisoning)."),
 ]
 
 # Prose / configuration files. The generic regex and entropy heuristics are
@@ -127,11 +144,12 @@ def _git_head(repo: Path) -> str | None:
 
 
 def load_signatures_from_repo(pinned_sha: str | None = PINNED_SIGNATURES_SHA,
-                              allow_unpinned: bool = False) -> list[re.Pattern[str]]:
-    """Load and compile regex patterns from the ai-skill-signatures repository.
+                              allow_unpinned: bool = False) -> list[Rule]:
+    """Load and compile detection rules from the ai-skill-signatures repository.
 
     Verifies the fetched HEAD against a client-side pinned commit SHA. Fetched
-    rules are used only on a match; otherwise the built-in patterns are used.
+    rules are used only on a match; otherwise the built-in rules are used. Each
+    returned Rule keeps its id/severity/description for the report.
     """
     try:
         if not SIGNATURES_CACHE.exists():
@@ -157,39 +175,88 @@ def load_signatures_from_repo(pinned_sha: str | None = PINNED_SIGNATURES_SHA,
                   f"SHA ({pinned_sha}).")
             print("Refusing fetched rules and using built-in patterns. If this "
                   "update is expected, review it and re-pin via --update-signatures.")
-            return EXFIL_PATTERNS
+            return BUILTIN_RULES
 
         manifest_path = SIGNATURES_CACHE / "manifest.json"
         if not manifest_path.exists():
             print("WARNING: manifest.json not found. Using fallback patterns.")
-            return EXFIL_PATTERNS
+            return BUILTIN_RULES
 
         manifest = json.loads(manifest_path.read_text())
 
-        patterns: list[re.Pattern[str]] = []
+        rules: list[Rule] = []
         for sig_file in manifest.get("signatures", []):
             sig_path = SIGNATURES_CACHE / sig_file
             if not sig_path.exists():
                 continue
             try:
-                rules = json.loads(sig_path.read_text())
-                for rule in rules:
-                    pattern_str = rule.get("pattern", "")
-                    ignorecase = rule.get("ignorecase", True)
-                    if pattern_str:
-                        flags = re.IGNORECASE if ignorecase else 0
-                        patterns.append(re.compile(pattern_str, flags))
+                for entry in json.loads(sig_path.read_text()):
+                    pattern_str = entry.get("pattern", "")
+                    if not pattern_str:
+                        continue
+                    flags = re.IGNORECASE if entry.get("ignorecase", True) else 0
+                    rules.append(Rule(
+                        re.compile(pattern_str, flags),
+                        entry.get("id", "SIG"),
+                        entry.get("severity", "medium"),
+                        entry.get("description", "Signature match."),
+                    ))
             except Exception as e:
                 print(f"WARNING: Failed to load {sig_file}: {e}")
 
-        if patterns:
-            print(f"Loaded {len(patterns)} signature patterns from ai-skill-signatures repo.")
-            return patterns
-        return EXFIL_PATTERNS
+        if rules:
+            print(f"Loaded {len(rules)} signature rules from ai-skill-signatures repo.")
+            return rules
+        return BUILTIN_RULES
 
     except Exception as e:
         print(f"WARNING: Could not load signatures ({e}). Using fallback patterns.")
-        return EXFIL_PATTERNS
+        return BUILTIN_RULES
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """Return the dotted name for a Name/Attribute chain (e.g. os.path.join)."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _build_alias_map(tree: ast.AST) -> dict[str, str]:
+    """Map local binding -> canonical dotted name from import statements, so
+    aliased/`from` imports resolve to their real target.
+
+    `import subprocess as sp` -> {"sp": "subprocess"};
+    `from os import system as s` -> {"s": "os.system"}.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    aliases[a.asname] = a.name
+                else:
+                    top = a.name.split(".")[0]
+                    aliases[top] = top
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for a in node.names:
+                local = a.asname or a.name
+                aliases[local] = f"{module}.{a.name}" if module else a.name
+    return aliases
+
+
+def _resolve_call_name(func: ast.AST, aliases: dict[str, str]) -> str | None:
+    """Resolve a call target to its canonical dotted name using import aliases."""
+    dotted = _dotted_name(func)
+    if not dotted:
+        return None
+    parts = dotted.split(".")
+    if parts[0] in aliases:
+        return ".".join([aliases[parts[0]]] + parts[1:])
+    return dotted
+
 
 def _display_path(filepath: Path, base: Path | None) -> str:
     """Path shown in findings: relative to the scan root when possible, so
@@ -202,9 +269,9 @@ def _display_path(filepath: Path, base: Path | None) -> str:
     return filepath.name
 
 
-def scan_single_file(filepath: Path, patterns: list[re.Pattern[str]],
+def scan_single_file(filepath: Path, rules: list[Rule],
                      base: Path | None = None) -> list[dict[str, Any]]:
-    """Scan one file using provided patterns."""
+    """Scan one file using the provided detection rules."""
     findings: list[dict[str, Any]] = []
     rel_path = _display_path(filepath, base)
     try:
@@ -240,13 +307,12 @@ def scan_single_file(filepath: Path, patterns: list[re.Pattern[str]],
     if filepath.suffix == ".py":
         try:
             tree = ast.parse(content, filename=str(filepath))
+            alias_map = _build_alias_map(tree)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
-                    func_name: str | None = None
-                    if isinstance(node.func, ast.Name):
-                        func_name = node.func.id
-                    elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-                        func_name = f"{node.func.value.id}.{node.func.attr}"
+                    # Resolve through import aliases so `from os import system`
+                    # and `import subprocess as sp` cannot bypass detection.
+                    func_name = _resolve_call_name(node.func, alias_map)
                     if func_name in DANGEROUS_FUNCS:
                         line_no = getattr(node, "lineno", 0)
                         snippet = lines[line_no - 1].strip()[:200] if 0 < line_no <= len(lines) else ""
@@ -277,25 +343,18 @@ def scan_single_file(filepath: Path, patterns: list[re.Pattern[str]],
     # drive pathological regex backtracking.
     _entropy_re = re.compile(r'["\']([A-Za-z0-9+/=_-]{30,})["\']')
     if not is_prose:
-        pattern_meta = []
-        for pattern in patterns:
-            # A bare URL is a weak signal on its own; keyword patterns
-            # (exfiltration / prompt override) are the strong ones.
-            is_url_only = pattern.pattern.startswith("https?://")
-            is_high = any(kw in pattern.pattern.lower() for kw in ["exfil", "ignore", "leak", "override"])
-            pattern_meta.append((pattern, "low" if is_url_only else ("high" if is_high else "medium")))
-
         for line_no, line in enumerate(lines, 1):
             if len(line) > MAX_SCAN_LINE:
                 continue
-            for pattern, severity in pattern_meta:
-                if pattern.search(line):
+            for rule in rules:
+                if rule.regex.search(line):
                     findings.append({
                         "file": rel_path,
                         "line": line_no,
                         "type": "suspicious_pattern",
-                        "severity": severity,
-                        "description": "Potential exfiltration, callback, or prompt injection indicator",
+                        "rule_id": rule.id,
+                        "severity": rule.severity,
+                        "description": rule.description,
                         "snippet": line.strip()[:200],
                         "recommendation": "Inspect data flow to network or secret sinks. Block untrusted patterns."
                     })
@@ -370,9 +429,12 @@ def to_sarif(report: dict[str, Any]) -> dict[str, Any]:
     for f in findings:
         start_line = f.get("line") or 0
         message = f.get("description") or RULE_DESCRIPTIONS.get(f["type"], f["type"])
+        rule_id = f.get("rule_id")
+        if rule_id:
+            message = f"[{rule_id}] {message}"
         snippet = f.get("snippet") or ""
         fingerprint = hashlib.sha1(
-            f"{f.get('file','')}:{start_line}:{f['type']}:{snippet}".encode("utf-8")
+            f"{f.get('file','')}:{start_line}:{f['type']}:{rule_id or ''}:{snippet}".encode("utf-8")
         ).hexdigest()
         results.append({
             "ruleId": f["type"],
@@ -533,7 +595,7 @@ def main() -> None:
         "medium_severity": medium_sev,
         "low_severity": len(all_findings) - high_sev - medium_sev,
         "findings": all_findings,
-        "signatures_source": "ai-skill-signatures repo" if active_patterns != EXFIL_PATTERNS else "fallback hardcoded"
+        "signatures_source": "fallback hardcoded" if active_patterns is BUILTIN_RULES else "ai-skill-signatures repo"
     }
 
     output_path = Path(args.output).resolve()
