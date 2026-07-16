@@ -46,7 +46,7 @@ DANGEROUS_FUNCS: set[str] = {
 EXFIL_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'https?://(?!api\.openai\.com|api\.anthropic\.com|api\.groq\.com|api\.x\.ai|localhost|127\.0\.0\.1|0\.0\.0\.0)[^\s"\'`]{8,}', re.IGNORECASE),
     re.compile(r'(?:requests|urllib3?|httpx|http\.client|socket)\s*\.\s*(?:post|get|request|send|connect|create_connection)', re.IGNORECASE),
-    re.compile(r'(?:os\.environ|getenv|environ\[|os\.getenv)\s*\[?\s*["\']?[A-Z_]+["\']?\s*\]?', re.IGNORECASE),
+    re.compile(r'(?:os\.environ(?:\.get)?|os\.getenv|getenv|environ)\s*[\[(]\s*["\']?[A-Za-z_][A-Za-z0-9_]*', re.IGNORECASE),
     re.compile(r'(?:ignore|disregard|override|forget|discard).*?(?:previous|all|system|prior|earlier|instructions|rules|policies|guidelines)', re.IGNORECASE),
     re.compile(r'(?:exfiltrat|leak|steal|exfil|beacon|callback|phonehome|upload|transmit).*?(?:data|secret|key|token|env|memory|context|prompt|user|agent|history)', re.IGNORECASE),
     re.compile(r'base64\.(?:b64encode|b64decode|standard_b64decode|urlsafe_b64decode)', re.IGNORECASE),
@@ -216,8 +216,15 @@ def scan_single_file(filepath: Path, patterns: list[re.Pattern[str]]) -> list[di
 
     # Skill definition checks
     if "SKILL" in filepath.name.upper() or filepath.suffix in {".md", ".markdown"}:
-        injection_markers = ["exfiltrate", "send data", "callback url", "ignore previous", "override safety"]
-        if any(marker in content.lower() for marker in injection_markers):
+        injection_markers = [
+            r"exfiltrat\w*",
+            r"send\s+(?:the\s+)?(?:user\s+|agent\s+)?(?:data|memory|context|secrets?|history)",
+            r"callback\s+url",
+            r"ignore\s+(?:all\s+|any\s+)?(?:previous|prior|earlier)\s+instructions",
+            r"override\s+(?:safety|security|system)",
+            r"disregard\s+(?:all\s+|any\s+)?(?:previous|prior|earlier)",
+        ]
+        if any(re.search(m, content, re.IGNORECASE) for m in injection_markers):
             findings.append({
                 "file": rel_path,
                 "line": 1,
@@ -293,15 +300,28 @@ def main() -> None:
     all_findings: list[dict[str, Any]] = []
     skip_dirs = {".git", "__pycache__", ".venv", "venv", "node_modules", "dist", "build"}
 
-    print(f"Scanning files under {root} ...")
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
-        for filename in filenames:
-            if (filename.endswith((".py", ".md", ".markdown", ".txt", ".yaml", ".yml")) or
+    def _should_scan(filename: str) -> bool:
+        return (filename.endswith((".py", ".md", ".markdown", ".txt", ".yaml", ".yml")) or
                 "SKILL" in filename.upper() or
-                filename in {"requirements.txt", "setup.py", "pyproject.toml", "Dockerfile"}):
-                fpath = Path(dirpath) / filename
-                all_findings.extend(scan_single_file(fpath, active_patterns))
+                filename in {"requirements.txt", "setup.py", "pyproject.toml", "Dockerfile"})
+
+    # Collect target files. A single file passed via --path must be scanned
+    # directly: os.walk() over a file yields nothing, which previously caused
+    # single-file scans to silently report zero findings.
+    files_to_scan: list[Path] = []
+    if root.is_file():
+        # An explicitly named file is always scanned, regardless of extension.
+        files_to_scan.append(root)
+    else:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            for filename in filenames:
+                if _should_scan(filename):
+                    files_to_scan.append(Path(dirpath) / filename)
+
+    print(f"Scanning {len(files_to_scan)} file(s) under {root} ...")
+    for fpath in files_to_scan:
+        all_findings.extend(scan_single_file(fpath, active_patterns))
 
     high_sev = sum(1 for f in all_findings if f.get("severity") == "high")
     medium_sev = sum(1 for f in all_findings if f.get("severity") == "medium")
