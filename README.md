@@ -64,6 +64,14 @@ pip install -e .
 ai-skill-scanner --path .
 ```
 
+Emit SARIF for GitHub code scanning (surfaces findings in the Security tab):
+
+```bash
+ai-skill-scanner --path . --format sarif --output ai-skill-scanner.sarif
+```
+
+Then upload with `github/codeql-action/upload-sarif` (see `.github/workflows/ci.yml`). Severity maps to SARIF levels: high → error, medium → warning, low → note.
+
 ## Docker (Recommended for Isolation)
 
 ```bash

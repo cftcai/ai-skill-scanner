@@ -52,3 +52,28 @@ jobs:
         run: docker build -t ai-skill-scanner:test .
       - name: Test Docker run (help)
         run: docker run --rm ai-skill-scanner:test --help
+
+  code-scanning:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Scan and emit SARIF
+        run: python scanner.py --path . --format sarif --output ai-skill-scanner.sarif
+
+      - name: Upload SARIF to GitHub code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ai-skill-scanner.sarif
+          category: ai-skill-scanner

