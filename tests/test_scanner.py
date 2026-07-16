@@ -294,18 +294,21 @@ def test_signature_pin_verification(tmp_path, monkeypatch):
         "severity": "high", "description": "d", "added_in": "x",
     }]))
 
-    monkeypatch.setattr(scanner, "SIGNATURES_CACHE", cache)
+    # Patch the module that owns these names (load_signatures_from_repo reads
+    # its own module globals, not the back-compat shim's re-exports).
+    from ai_skill_scanner import signatures as sigmod
+    monkeypatch.setattr(sigmod, "SIGNATURES_CACHE", cache)
     # Stub the network git pull and pin the fetched HEAD to a known value.
-    monkeypatch.setattr(scanner.subprocess, "run",
+    monkeypatch.setattr(sigmod.subprocess, "run",
                         lambda *a, **k: types.SimpleNamespace(returncode=0, stdout=b"", stderr=b""))
-    monkeypatch.setattr(scanner, "_git_head", lambda repo: "cafe1234")
+    monkeypatch.setattr(sigmod, "_git_head", lambda repo: "cafe1234")
 
     # Matching pin -> fetched rules are used.
-    assert scanner.load_signatures_from_repo(pinned_sha="cafe1234") is not scanner.BUILTIN_RULES
+    assert sigmod.load_signatures_from_repo(pinned_sha="cafe1234") is not sigmod.BUILTIN_RULES
     # Mismatched pin -> refuse fetched rules, fall back to built-ins.
-    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff") is scanner.BUILTIN_RULES
+    assert sigmod.load_signatures_from_repo(pinned_sha="0000ffff") is sigmod.BUILTIN_RULES
     # Escape hatch -> use fetched rules despite mismatch.
-    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff", allow_unpinned=True) is not scanner.BUILTIN_RULES
+    assert sigmod.load_signatures_from_repo(pinned_sha="0000ffff", allow_unpinned=True) is not sigmod.BUILTIN_RULES
 
 
 def test_sarif_output_is_valid():

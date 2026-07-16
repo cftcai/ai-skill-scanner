@@ -30,7 +30,7 @@ jobs:
         run: ruff check .
 
       - name: Type check (mypy)
-        run: mypy scanner.py
+        run: mypy ai_skill_scanner scanner.py
 
       - name: Syntax and import check
         run: python -c "import scanner; print('Import successful')"

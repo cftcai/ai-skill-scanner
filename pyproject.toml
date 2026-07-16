@@ -36,7 +36,8 @@ Repository = "https://github.com/cftcai/ai-skill-scanner"
 Issues = "https://github.com/cftcai/ai-skill-scanner/issues"
 
 [tool.setuptools]
-py-modules = ["scanner"]
+py-modules = ["scanner"]          # back-compat shim
+packages = ["ai_skill_scanner"]   # implementation package
 
 [tool.ruff]
 line-length = 120
