@@ -160,10 +160,15 @@ def load_signatures_from_repo(pinned_sha: str | None = PINNED_SIGNATURES_SHA,
                 check=True, timeout=60, capture_output=True
             )
         else:
-            subprocess.run(
-                ["git", "-C", str(SIGNATURES_CACHE), "pull", "--ff-only"],
-                check=True, timeout=30, capture_output=True
-            )
+            # A failed update (e.g. offline) is non-fatal: fall through to verify
+            # and use the already-cached copy rather than dropping all rules.
+            try:
+                subprocess.run(
+                    ["git", "-C", str(SIGNATURES_CACHE), "pull", "--ff-only"],
+                    check=True, timeout=30, capture_output=True
+                )
+            except (subprocess.SubprocessError, OSError):
+                print("WARNING: could not update signatures (offline?); using the cached copy.")
 
         # Client-side pin verification (trust-on-first-use). The pin is held by
         # the scanner, not read from the fetched repo, so a compromised upstream
@@ -176,6 +181,17 @@ def load_signatures_from_repo(pinned_sha: str | None = PINNED_SIGNATURES_SHA,
             print("Refusing fetched rules and using built-in patterns. If this "
                   "update is expected, review it and re-pin via --update-signatures.")
             return BUILTIN_RULES
+
+        # Reset the working tree to the trusted commit so a locally-modified
+        # cache (files changed without moving HEAD) cannot inject rules.
+        if pin_active and not allow_unpinned:
+            try:
+                subprocess.run(
+                    ["git", "-C", str(SIGNATURES_CACHE), "checkout", "--force", str(pinned_sha)],
+                    check=True, timeout=30, capture_output=True
+                )
+            except (subprocess.SubprocessError, OSError):
+                pass  # HEAD already verified above; checkout is defense-in-depth
 
         manifest_path = SIGNATURES_CACHE / "manifest.json"
         if not manifest_path.exists():
@@ -569,10 +585,20 @@ def main() -> None:
         files_to_scan.append(root)
     else:
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            # Do not descend symlinked directories (os.walk default), and skip
+            # symlinked files entirely: following a symlink such as
+            # `SKILL.md -> /etc/passwd` in an untrusted repo would read and
+            # report the contents of arbitrary local files.
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in skip_dirs and not (Path(dirpath) / d).is_symlink()
+            ]
             for filename in filenames:
+                fpath = Path(dirpath) / filename
+                if fpath.is_symlink():
+                    continue
                 if _should_scan(filename):
-                    files_to_scan.append(Path(dirpath) / filename)
+                    files_to_scan.append(fpath)
 
     # Base for relative paths in findings: the directory itself, or the parent
     # of a single scanned file, so URIs are portable (e.g. tests/skill.py).
@@ -588,7 +614,7 @@ def main() -> None:
     report: dict[str, Any] = {
         "scanner": "ai-skill-scanner",
         "version": __version__,
-        "target": args.github_url or str(Path(args.path).resolve()),
+        "target": args.github_url or args.path,
         "scan_timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "total_findings": len(all_findings),
         "high_severity": high_sev,
