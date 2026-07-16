@@ -17,9 +17,11 @@ Run the same checks CI runs:
 
 ```bash
 ruff check .
-mypy scanner.py
+mypy ai_skill_scanner scanner.py
 pytest tests/ -q
 ```
+
+The implementation lives in the `ai_skill_scanner/` package; the top-level `scanner.py` is a thin back-compat shim (keeps `import scanner` and `python scanner.py` working).
 
 All three must pass. New behavior needs a test.
 

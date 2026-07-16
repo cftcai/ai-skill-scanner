@@ -16,9 +16,9 @@ RUN useradd --create-home --shell /bin/bash scanner
 
 WORKDIR /app
 
-# Copy scanner
+# Copy the scanner (back-compat shim) and its implementation package
 COPY scanner.py /app/scanner.py
-RUN chmod +x /app/scanner.py
+COPY ai_skill_scanner/ /app/ai_skill_scanner/
 
 # Switch to non-root
 USER scanner
