@@ -5,9 +5,13 @@ of dangerous execution, exfiltration, prompt injection, and obfuscation.
 
 import json
 import tempfile
+import types
 from pathlib import Path
 import subprocess
 import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import scanner  # noqa: E402
 
 def test_dangerous_call_detection():
     """Verify AST detects eval and subprocess patterns."""
@@ -101,6 +105,33 @@ def test_high_entropy_obfuscation():
         assert result.returncode == 0
         report = json.loads((Path(tmp)/"r.json").read_text())
         assert any(f["type"] == "high_entropy_obfuscation" for f in report["findings"])
+
+def test_signature_pin_verification(tmp_path, monkeypatch):
+    """Fetched rules are trusted only when HEAD matches the client-side pin."""
+    cache = tmp_path / "sig"
+    (cache / "signatures").mkdir(parents=True)
+    (cache / "manifest.json").write_text(json.dumps({
+        "version": "x", "minimum_scanner_version": "1.1.0",
+        "latest_commit_sha": "PLACEHOLDER", "signatures": ["signatures/r.json"],
+    }))
+    (cache / "signatures" / "r.json").write_text(json.dumps([{
+        "id": "T-1", "pattern": "eval\\(", "ignorecase": True,
+        "severity": "high", "description": "d", "added_in": "x",
+    }]))
+
+    monkeypatch.setattr(scanner, "SIGNATURES_CACHE", cache)
+    # Stub the network git pull and pin the fetched HEAD to a known value.
+    monkeypatch.setattr(scanner.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout=b"", stderr=b""))
+    monkeypatch.setattr(scanner, "_git_head", lambda repo: "cafe1234")
+
+    # Matching pin -> fetched rules are used.
+    assert scanner.load_signatures_from_repo(pinned_sha="cafe1234") is not scanner.EXFIL_PATTERNS
+    # Mismatched pin -> refuse fetched rules, fall back to built-ins.
+    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff") is scanner.EXFIL_PATTERNS
+    # Escape hatch -> use fetched rules despite mismatch.
+    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff", allow_unpinned=True) is not scanner.EXFIL_PATTERNS
+
 
 def test_sarif_output_is_valid():
     """--format sarif must emit well-formed SARIF 2.1.0 for code scanning."""

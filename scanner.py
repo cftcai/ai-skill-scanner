@@ -37,6 +37,14 @@ __version__ = "1.2.0"
 SIGNATURES_CACHE = Path.home() / ".cache" / "ai-skill-signatures"
 SIGNATURES_REPO = "https://github.com/cftcai/ai-skill-signatures.git"
 
+# Client-side pin (trust-on-first-use): the ai-skill-signatures commit this
+# scanner build trusts. Fetched rules are only used when the cloned HEAD matches
+# this SHA, so a tampered or unexpectedly-changed upstream cannot silently inject
+# rules. This must be pinned by the scanner (not read from the signatures repo),
+# because a repo an attacker controls could otherwise vouch for itself. Bump it
+# with `--update-signatures` after reviewing the fetched changes.
+PINNED_SIGNATURES_SHA = "91848886271b742055ee060b3baa9902237a070b"
+
 # Human-readable descriptions for each finding type, surfaced as SARIF rules.
 RULE_DESCRIPTIONS: dict[str, str] = {
     "dangerous_code_execution": "Dangerous code execution primitive (eval/exec/subprocess/deserialization).",
@@ -102,9 +110,22 @@ def calculate_shannon_entropy(data: str) -> float:
             entropy -= p * math.log2(p)
     return entropy
 
-def load_signatures_from_repo() -> list[re.Pattern[str]]:
+def _git_head(repo: Path) -> str | None:
+    """Return the current HEAD commit SHA of a git repo, or None on failure."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=15
+        ).strip()
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def load_signatures_from_repo(pinned_sha: str | None = PINNED_SIGNATURES_SHA,
+                              allow_unpinned: bool = False) -> list[re.Pattern[str]]:
     """Load and compile regex patterns from the ai-skill-signatures repository.
-    Performs SHA verification against manifest.json:latest_commit_sha.
+
+    Verifies the fetched HEAD against a client-side pinned commit SHA. Fetched
+    rules are used only on a match; otherwise the built-in patterns are used.
     """
     try:
         if not SIGNATURES_CACHE.exists():
@@ -120,24 +141,24 @@ def load_signatures_from_repo() -> list[re.Pattern[str]]:
                 check=True, timeout=30, capture_output=True
             )
 
+        # Client-side pin verification (trust-on-first-use). The pin is held by
+        # the scanner, not read from the fetched repo, so a compromised upstream
+        # cannot vouch for itself.
+        head = _git_head(SIGNATURES_CACHE)
+        pin_active = bool(pinned_sha) and not str(pinned_sha).startswith("PLACEHOLDER")
+        if not allow_unpinned and pin_active and head != pinned_sha:
+            print(f"WARNING: signatures HEAD ({head}) does not match the pinned "
+                  f"SHA ({pinned_sha}).")
+            print("Refusing fetched rules and using built-in patterns. If this "
+                  "update is expected, review it and re-pin via --update-signatures.")
+            return EXFIL_PATTERNS
+
         manifest_path = SIGNATURES_CACHE / "manifest.json"
         if not manifest_path.exists():
             print("WARNING: manifest.json not found. Using fallback patterns.")
             return EXFIL_PATTERNS
 
         manifest = json.loads(manifest_path.read_text())
-        latest_sha = manifest.get("latest_commit_sha", "")
-
-        # Verify SHA integrity (skip if placeholder)
-        if latest_sha and not latest_sha.startswith("PLACEHOLDER"):
-            current_sha = subprocess.check_output(
-                ["git", "-C", str(SIGNATURES_CACHE), "rev-parse", "HEAD"],
-                text=True
-            ).strip()
-            if current_sha != latest_sha:
-                print(f"WARNING: Signature SHA mismatch! Expected {latest_sha}, got {current_sha}")
-                print("Signatures may be tampered or outdated. Using fallback patterns.")
-                return EXFIL_PATTERNS
 
         patterns: list[re.Pattern[str]] = []
         for sig_file in manifest.get("signatures", []):
@@ -360,7 +381,7 @@ def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="ai-skill-scanner",
-        description="Standalone scanner for public AI skills with dynamic signatures and SHA verification."
+        description="Standalone scanner for public AI skills with dynamic, client-side-pinned signatures."
     )
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--github-url", metavar="URL", help="Public GitHub repository URL to clone and scan")
@@ -370,21 +391,36 @@ def main() -> None:
     parser.add_argument("--format", choices=["json", "sarif"], default="json",
                         help="Report format: json (native) or sarif (GitHub code scanning)")
     parser.add_argument("--update-signatures", action="store_true",
-                        help="Update and verify signatures from ai-skill-signatures repo")
+                        help="Fetch signatures and report the fetched HEAD vs the pinned SHA")
+    parser.add_argument("--signatures-sha", metavar="SHA", default=None,
+                        help="Override the trusted ai-skill-signatures commit SHA (client-side pin)")
+    parser.add_argument("--allow-unpinned", action="store_true",
+                        help="Skip client-side signature pin verification (use with caution)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
 
+    pinned_sha = args.signatures_sha or PINNED_SIGNATURES_SHA
+
     if args.update_signatures:
-        print("Updating signatures from ai-skill-signatures...")
-        load_signatures_from_repo()
-        print("Signatures updated and verified successfully.")
+        print("Fetching signatures from ai-skill-signatures...")
+        load_signatures_from_repo(pinned_sha=pinned_sha, allow_unpinned=True)
+        head = _git_head(SIGNATURES_CACHE)
+        print(f"Fetched signatures HEAD: {head}")
+        print(f"Scanner trusts (pin):    {pinned_sha}")
+        if head == pinned_sha:
+            print("Pin matches — fetched signatures are trusted.")
+        else:
+            print("Pin MISMATCH. Review the fetched changes, then set "
+                  "PINNED_SIGNATURES_SHA (or pass --signatures-sha) to the fetched "
+                  "HEAD to trust it.")
         return
 
     # Require either --github-url or --path when not updating signatures
     if not args.github_url and not args.path:
         parser.error("one of the arguments --github-url --path is required")
 
-    active_patterns = load_signatures_from_repo()
+    active_patterns = load_signatures_from_repo(pinned_sha=pinned_sha,
+                                                allow_unpinned=args.allow_unpinned)
 
     target_dir: str | None = None
     cleanup: bool = False
