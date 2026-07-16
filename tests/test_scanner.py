@@ -168,6 +168,31 @@ def test_github_url_argument_injection_rejected():
         assert "must be an https" in result.stdout
 
 
+def test_symlinked_file_is_not_read():
+    """A symlink in a scanned tree must not be followed (local file disclosure)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        secret = tmp / "secret.txt"
+        secret.write_text("TOPSECRET_TOKEN_ghp_shouldnotappear\n")
+        repo = tmp / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text("x = 1\n")
+        # A malicious symlink pointing at a file outside the repo.
+        (repo / "SKILL.md").symlink_to(secret)
+
+        out = tmp / "r.json"
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--path", str(repo), "--output", str(out)],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr
+        report_text = out.read_text()
+        assert "TOPSECRET_TOKEN" not in report_text
+        report = json.loads(report_text)
+        assert not any("SKILL.md" in f.get("file", "") for f in report["findings"])
+
+
 def test_large_file_is_skipped():
     """Files over the size cap are skipped instead of being read into memory."""
     with tempfile.TemporaryDirectory() as tmp:

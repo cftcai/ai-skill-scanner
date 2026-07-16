@@ -569,10 +569,20 @@ def main() -> None:
         files_to_scan.append(root)
     else:
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            # Do not descend symlinked directories (os.walk default), and skip
+            # symlinked files entirely: following a symlink such as
+            # `SKILL.md -> /etc/passwd` in an untrusted repo would read and
+            # report the contents of arbitrary local files.
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in skip_dirs and not (Path(dirpath) / d).is_symlink()
+            ]
             for filename in filenames:
+                fpath = Path(dirpath) / filename
+                if fpath.is_symlink():
+                    continue
                 if _should_scan(filename):
-                    files_to_scan.append(Path(dirpath) / filename)
+                    files_to_scan.append(fpath)
 
     # Base for relative paths in findings: the directory itself, or the parent
     # of a single scanned file, so URIs are portable (e.g. tests/skill.py).
