@@ -106,6 +106,49 @@ def test_high_entropy_obfuscation():
         report = json.loads((Path(tmp)/"r.json").read_text())
         assert any(f["type"] == "high_entropy_obfuscation" for f in report["findings"])
 
+def test_github_url_argument_injection_rejected():
+    """A --github-url that is not a real remote URL must be rejected before clone."""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--github-url=--upload-pack=/bin/sh", "--output", str(Path(tmp) / "r.json")],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 2
+        assert "must be an https" in result.stdout
+
+
+def test_large_file_is_skipped():
+    """Files over the size cap are skipped instead of being read into memory."""
+    with tempfile.TemporaryDirectory() as tmp:
+        big = Path(tmp) / "big.py"
+        big.write_text("x = '" + ("A" * (scanner.MAX_FILE_BYTES + 100)) + "'\n")
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--path", str(big), "--output", str(Path(tmp) / "r.json")],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr
+        report = json.loads((Path(tmp) / "r.json").read_text())
+        assert any(f["type"] == "skipped_large_file" for f in report["findings"])
+
+
+def test_long_line_does_not_hang():
+    """A pathological single long line must not cause runaway regex work."""
+    import time
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "evil.py"
+        f.write_text("u = 'https://" + ("a" * 200000) + "'\n")
+        start = time.time()
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--path", str(f), "--output", str(Path(tmp) / "r.json")],
+            capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode == 0
+        assert time.time() - start < 20  # generous; line-length guard keeps it fast
+
+
 def test_signature_pin_verification(tmp_path, monkeypatch):
     """Fetched rules are trusted only when HEAD matches the client-side pin."""
     cache = tmp_path / "sig"
