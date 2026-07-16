@@ -51,7 +51,7 @@ SIGNATURES_REPO = "https://github.com/cftcai/ai-skill-signatures.git"
 # rules. This must be pinned by the scanner (not read from the signatures repo),
 # because a repo an attacker controls could otherwise vouch for itself. Bump it
 # with `--update-signatures` after reviewing the fetched changes.
-PINNED_SIGNATURES_SHA = "91848886271b742055ee060b3baa9902237a070b"
+PINNED_SIGNATURES_SHA = "448ae9cac4eb9b12fc41e82e345309f5efff8f8c"
 
 # Human-readable descriptions for each finding type, surfaced as SARIF rules.
 RULE_DESCRIPTIONS: dict[str, str] = {

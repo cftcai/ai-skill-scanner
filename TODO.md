@@ -20,7 +20,9 @@
 
 ## In Progress / Next
 - Deeper detection: taint tracking to cut dual-use (env/subprocess) noise
-- Automate the signature re-pin (CI opens a PR bumping `PINNED_SIGNATURES_SHA` when ai-skill-signatures main advances)
+
+## Ops / automation done (2026-07-16)
+- ci(scanner): `signature-pin.yml` auto-detects when ai-skill-signatures main advances, bumps `PINNED_SIGNATURES_SHA`, verifies tests, and opens a review PR (#13)
 
 ## Not Done
 - Make repositories public + add topics (use bulk script --make-public after validation)
