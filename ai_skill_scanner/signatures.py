@@ -18,7 +18,7 @@ SIGNATURES_REPO = "https://github.com/cftcai/ai-skill-signatures.git"
 # rules. This must be pinned by the scanner (not read from the signatures repo),
 # because a repo an attacker controls could otherwise vouch for itself. Bump it
 # with `--update-signatures` after reviewing the fetched changes.
-PINNED_SIGNATURES_SHA = "695e7df419656cafc768936ba2d697fc8095ddfe"
+PINNED_SIGNATURES_SHA = "09d252c900d696cbc622a3e5a20b928d870429ab"
 
 def _git_head(repo: Path) -> str | None:
     """Return the current HEAD commit SHA of a git repo, or None on failure."""
