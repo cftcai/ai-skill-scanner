@@ -95,6 +95,12 @@ PROSE_SUFFIXES: set[str] = {".md", ".markdown", ".txt", ".rst", ".toml", ".cfg",
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
 
+# Resource limits for scanning untrusted input. The scanner is meant to run on
+# hostile repositories, so file size and per-line regex work are bounded to
+# prevent memory exhaustion and pathological regex backtracking (ReDoS).
+MAX_FILE_BYTES = 2 * 1024 * 1024   # skip files larger than 2 MiB
+MAX_SCAN_LINE = 2000               # skip regex on longer (minified/data) lines
+
 def calculate_shannon_entropy(data: str) -> float:
     """Calculate Shannon entropy of a string. Values >4.5 often indicate encoded payloads."""
     if not data or len(data) < 20:
@@ -202,6 +208,20 @@ def scan_single_file(filepath: Path, patterns: list[re.Pattern[str]],
     findings: list[dict[str, Any]] = []
     rel_path = _display_path(filepath, base)
     try:
+        if filepath.stat().st_size > MAX_FILE_BYTES:
+            findings.append({
+                "file": rel_path,
+                "line": 0,
+                "type": "skipped_large_file",
+                "severity": "low",
+                "description": f"File exceeds the {MAX_FILE_BYTES}-byte scan cap and was skipped.",
+                "snippet": "",
+                "recommendation": "Review large/binary blobs manually; they are not statically scanned."
+            })
+            return findings
+    except OSError:
+        pass
+    try:
         content = filepath.read_text(encoding="utf-8", errors="ignore")
     except (OSError, UnicodeDecodeError) as e:
         findings.append({
@@ -252,42 +272,48 @@ def scan_single_file(filepath: Path, patterns: list[re.Pattern[str]],
     is_prose = filepath.suffix.lower() in PROSE_SUFFIXES
 
     # Regex + entropy heuristics run on code only. Prose/config files are
-    # covered by the dedicated skill check below.
+    # covered by the dedicated skill check below. Scanning is line-based and
+    # skips very long (minified/data) lines so a single crafted line cannot
+    # drive pathological regex backtracking.
+    _entropy_re = re.compile(r'["\']([A-Za-z0-9+/=_-]{30,})["\']')
     if not is_prose:
+        pattern_meta = []
         for pattern in patterns:
             # A bare URL is a weak signal on its own; keyword patterns
             # (exfiltration / prompt override) are the strong ones.
             is_url_only = pattern.pattern.startswith("https?://")
             is_high = any(kw in pattern.pattern.lower() for kw in ["exfil", "ignore", "leak", "override"])
-            severity = "low" if is_url_only else ("high" if is_high else "medium")
-            for match in pattern.finditer(content):
-                line_no = content[:match.start()].count("\n") + 1
-                snippet = lines[line_no - 1].strip()[:200] if 0 < line_no <= len(lines) else match.group(0)[:120]
-                findings.append({
-                    "file": rel_path,
-                    "line": line_no,
-                    "type": "suspicious_pattern",
-                    "severity": severity,
-                    "description": "Potential exfiltration, callback, or prompt injection indicator",
-                    "snippet": snippet,
-                    "recommendation": "Inspect data flow to network or secret sinks. Block untrusted patterns."
-                })
+            pattern_meta.append((pattern, "low" if is_url_only else ("high" if is_high else "medium")))
 
-        # High entropy detection
-        for match in re.finditer(r'["\']([A-Za-z0-9+/=_-]{30,})["\']', content):
-            candidate = match.group(1)
-            entropy = calculate_shannon_entropy(candidate)
-            if entropy > 4.8:
-                line_no = content[:match.start()].count("\n") + 1
-                findings.append({
-                    "file": rel_path,
-                    "line": line_no,
-                    "type": "high_entropy_obfuscation",
-                    "severity": "medium",
-                    "description": f"High entropy encoded string (entropy={entropy:.2f}) may conceal payload",
-                    "snippet": candidate[:60] + "...",
-                    "recommendation": "Manually decode and review. Typical of packed malware or stolen data."
-                })
+        for line_no, line in enumerate(lines, 1):
+            if len(line) > MAX_SCAN_LINE:
+                continue
+            for pattern, severity in pattern_meta:
+                if pattern.search(line):
+                    findings.append({
+                        "file": rel_path,
+                        "line": line_no,
+                        "type": "suspicious_pattern",
+                        "severity": severity,
+                        "description": "Potential exfiltration, callback, or prompt injection indicator",
+                        "snippet": line.strip()[:200],
+                        "recommendation": "Inspect data flow to network or secret sinks. Block untrusted patterns."
+                    })
+
+            # High entropy detection
+            for m in _entropy_re.finditer(line):
+                candidate = m.group(1)
+                entropy = calculate_shannon_entropy(candidate)
+                if entropy > 4.8:
+                    findings.append({
+                        "file": rel_path,
+                        "line": line_no,
+                        "type": "high_entropy_obfuscation",
+                        "severity": "medium",
+                        "description": f"High entropy encoded string (entropy={entropy:.2f}) may conceal payload",
+                        "snippet": candidate[:60] + "...",
+                        "recommendation": "Manually decode and review. Typical of packed malware or stolen data."
+                    })
 
     # Skill definition checks. Markers are imperative injection *payloads*
     # (instructions aimed at the agent), not topic words, so documentation that
@@ -426,12 +452,22 @@ def main() -> None:
     cleanup: bool = False
 
     if args.github_url:
+        # Reject anything that is not a recognized remote URL. This blocks
+        # argument injection (a value like "--upload-pack=..." that git would
+        # treat as an option) and local-path scanning via --github-url.
+        if not (re.match(r"^(https?|git|ssh)://", args.github_url)
+                or re.match(r"^[A-Za-z0-9._-]+@[^/]+:", args.github_url)):
+            print("ERROR: --github-url must be an https://, http://, git://, "
+                  "ssh://, or user@host:path URL.")
+            sys.exit(2)
         target_dir = tempfile.mkdtemp(prefix="skillscan_")
         cleanup = True
         print(f"Cloning repository {args.github_url} (depth 1)...")
         try:
+            # "--" ensures the URL is never parsed as a git option even if
+            # validation is ever loosened.
             subprocess.run(
-                ["git", "clone", "--depth", "1", "--quiet", args.github_url, target_dir],
+                ["git", "clone", "--depth", "1", "--quiet", "--", args.github_url, target_dir],
                 check=True, timeout=120, capture_output=True
             )
         except subprocess.CalledProcessError as e:
