@@ -86,11 +86,12 @@ For GitHub URL scans the container needs temporary network access for git clone.
 The scanner performs static analysis across these vectors:
 
 - Dangerous Python execution (eval, exec, subprocess, pickle deserialization), including aliased and `from`-imports (`import subprocess as sp`, `from os import system`)
+- Dangerous shell/JavaScript constructs (`child_process`, `eval`/`Function`, `exec`/`spawn`, `curl … | sh`, `base64 -d | sh`)
 - Network exfiltration and callback patterns (requests to non-allowlisted hosts, secret leakage)
+- Hardcoded secrets — AWS/GitHub/Slack/Google/OpenAI tokens and private keys (values are **redacted** in the report)
+- Supply-chain risks — unpinned or URL/VCS dependencies in `requirements.txt`, and `curl | sh` / TLS-verification-disabled steps in Dockerfiles
 - Prompt injection and override instructions inside SKILL.md and markdown definitions
 - High-entropy obfuscated strings and decode chains
-- Supply chain indicators in requirements.txt, setup.py, and workflow files
-- File persistence attempts
 
 Each finding carries the rule id that fired, its curated severity (high/medium/low), the line number, a snippet, and a recommendation.
 

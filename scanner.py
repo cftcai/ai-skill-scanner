@@ -60,6 +60,8 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     "suspicious_pattern": "Potential exfiltration, network callback, or prompt-injection indicator.",
     "high_entropy_obfuscation": "High-entropy string that may conceal an encoded payload.",
     "prompt_injection_risk": "Prompt-injection or exfiltration language in a skill definition.",
+    "hardcoded_secret": "Hardcoded credential or private key.",
+    "supply_chain_risk": "Dependency or build-step supply-chain risk.",
     "syntax_error": "File could not be parsed.",
     "read_error": "File could not be read.",
 }
@@ -120,6 +122,45 @@ _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
 # prevent memory exhaustion and pathological regex backtracking (ReDoS).
 MAX_FILE_BYTES = 2 * 1024 * 1024   # skip files larger than 2 MiB
 MAX_SCAN_LINE = 2000               # skip regex on longer (minified/data) lines
+
+# High-confidence secret patterns (provider tokens + private keys). Matched on
+# every scanned file; the matched value is redacted in the finding snippet so
+# the scanner never writes a discovered secret into its own report.
+_SECRET_RULES: list[Rule] = [
+    Rule(re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "SEC-AWS-KEY", "high", "Hardcoded AWS access key id."),
+    Rule(re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "SEC-GITHUB-TOKEN", "high", "Hardcoded GitHub token."),
+    Rule(re.compile(r"\bgithub_pat_[A-Za-z0-9_]{60,}\b"), "SEC-GITHUB-PAT", "high", "Hardcoded GitHub fine-grained token."),
+    Rule(re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "SEC-SLACK-TOKEN", "high", "Hardcoded Slack token."),
+    Rule(re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "SEC-GOOGLE-KEY", "high", "Hardcoded Google API key."),
+    Rule(re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), "SEC-OPENAI-KEY", "high", "Hardcoded OpenAI-style API key."),
+    Rule(re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"), "SEC-PRIVATE-KEY", "high", "Embedded private key."),
+]
+
+# Lower-confidence generic credential assignment (code files only).
+_SECRET_ASSIGN = re.compile(
+    r"""(?ix)
+    (?:api[_-]?key|secret|token|passwd|password|access[_-]?key|private[_-]?key)
+    \s*[:=]\s*["'][^"']{8,}["']
+    """
+)
+
+# Dangerous constructs for shell and JavaScript/TypeScript, applied to those
+# code files in addition to the generic rules.
+_LANG_RULES: list[Rule] = [
+    Rule(re.compile(r"""require\(\s*["']child_process|(?<![\w.])child_process\b"""),
+         "JS-CHILD-PROC", "high", "Node child_process use (command execution)."),
+    Rule(re.compile(r"(?<![\w.])(?:eval|Function)\s*\("),
+         "JS-EVAL", "high", "Dynamic code execution (eval/Function)."),
+    Rule(re.compile(r"\b(?:execSync|spawnSync|execFile|execFileSync)\s*\(|(?<![\w.])(?:exec|spawn)\s*\("),
+         "JS-EXEC", "high", "Node exec/spawn (command execution)."),
+    Rule(re.compile(r"(?:curl|wget)\s[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b", re.IGNORECASE),
+         "SH-PIPE-SHELL", "high", "Piping a download straight into a shell."),
+    Rule(re.compile(r"base64\s+-d[^\n|]*\|\s*(?:sh|bash)\b", re.IGNORECASE),
+         "SH-B64-SHELL", "high", "Decoding base64 straight into a shell."),
+    Rule(re.compile(r"(?<![\w.])eval\s+[\"']?\$"),
+         "SH-EVAL", "high", "Shell eval of a variable."),
+]
+_CODE_LANG_SUFFIXES = {".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx", ".sh", ".bash"}
 
 def calculate_shannon_entropy(data: str) -> float:
     """Calculate Shannon entropy of a string. Values >4.5 often indicate encoded payloads."""
@@ -287,6 +328,92 @@ def _display_path(filepath: Path, base: Path | None) -> str:
     return filepath.name
 
 
+def _redact(value: str) -> str:
+    """Mask a secret so it is never written to the report in cleartext."""
+    return (value[:4] + "***") if len(value) > 8 else "***"
+
+
+def _scan_secrets(rel_path: str, lines: list[str], is_code: bool) -> list[dict[str, Any]]:
+    """Detect hardcoded secrets. Snippets are redacted."""
+    findings: list[dict[str, Any]] = []
+    for line_no, line in enumerate(lines, 1):
+        if len(line) > MAX_SCAN_LINE:
+            continue
+        for rule in _SECRET_RULES:
+            m = rule.regex.search(line)
+            if m:
+                findings.append({
+                    "file": rel_path, "line": line_no, "type": "hardcoded_secret",
+                    "rule_id": rule.id, "severity": rule.severity, "description": rule.description,
+                    "snippet": _redact(m.group(0)),
+                    "recommendation": "Remove the secret, rotate it, and load credentials from the environment or a secret manager.",
+                })
+        if is_code and (m := _SECRET_ASSIGN.search(line)):
+            findings.append({
+                "file": rel_path, "line": line_no, "type": "hardcoded_secret",
+                "rule_id": "SEC-ASSIGN", "severity": "medium",
+                "description": "Possible hardcoded credential in an assignment.",
+                # Redact the quoted value, keep the variable name for context.
+                "snippet": re.sub(r"""(["'])[^"']{8,}\1""", r"\1***\1", line.strip())[:200],
+                "recommendation": "Do not hardcode credentials; load them from the environment or a secret manager.",
+            })
+    return findings
+
+
+def _scan_lang_rules(rel_path: str, lines: list[str]) -> list[dict[str, Any]]:
+    """Shell / JavaScript dangerous-construct detection."""
+    findings: list[dict[str, Any]] = []
+    for line_no, line in enumerate(lines, 1):
+        if len(line) > MAX_SCAN_LINE:
+            continue
+        for rule in _LANG_RULES:
+            if rule.regex.search(line):
+                findings.append({
+                    "file": rel_path, "line": line_no, "type": "dangerous_code_execution",
+                    "rule_id": rule.id, "severity": rule.severity, "description": rule.description,
+                    "snippet": line.strip()[:200],
+                    "recommendation": "Review for untrusted input; avoid shelling out or dynamic execution.",
+                })
+    return findings
+
+
+def _scan_supply_chain(filepath: Path, rel_path: str, lines: list[str]) -> list[dict[str, Any]]:
+    """Filename-aware supply-chain checks for dependency and build files."""
+    findings: list[dict[str, Any]] = []
+    name = filepath.name.lower()
+
+    def add(line_no: int, rule_id: str, severity: str, desc: str, snippet: str) -> None:
+        findings.append({
+            "file": rel_path, "line": line_no, "type": "supply_chain_risk",
+            "rule_id": rule_id, "severity": severity, "description": desc,
+            "snippet": snippet[:200],
+            "recommendation": "Pin dependencies to trusted, hash/version-locked releases; avoid installing from arbitrary URLs.",
+        })
+
+    if name.startswith("requirements") and name.endswith(".txt"):
+        for line_no, raw in enumerate(lines, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            low = line.lower()
+            if low.startswith(("http://", "https://", "git+", "-e ")) or "git+" in low:
+                add(line_no, "SC-REQ-URL", "medium",
+                    "Dependency installed from a URL/VCS rather than a pinned package.", line)
+            elif not line.startswith("-") and not re.search(r"==|@|/", line):
+                add(line_no, "SC-REQ-UNPINNED", "low",
+                    "Unpinned dependency (no exact == version).", line)
+    elif name == "dockerfile" or name.endswith(".dockerfile"):
+        for line_no, raw in enumerate(lines, 1):
+            line = raw.strip()
+            if re.search(r"(?:curl|wget)\s[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash)", line, re.IGNORECASE):
+                add(line_no, "SC-DOCKER-PIPE", "high",
+                    "Dockerfile pipes a download straight into a shell.", line)
+            if re.search(r"--(?:no-check-certificate|trusted-host|insecure)\b", line, re.IGNORECASE):
+                add(line_no, "SC-DOCKER-INSECURE", "medium",
+                    "Dockerfile disables TLS certificate verification.", line)
+    return findings
+
+
 def scan_single_file(filepath: Path, rules: list[Rule],
                      base: Path | None = None) -> list[dict[str, Any]]:
     """Scan one file using the provided detection rules."""
@@ -422,13 +549,20 @@ def scan_single_file(filepath: Path, rules: list[Rule],
                 "recommendation": "Do not load skill. Treat definition as untrusted input to the agent runtime."
             })
 
+    # Always-on checks, independent of the active rule set (built-in vs repo).
+    findings.extend(_scan_secrets(rel_path, lines, is_code=not is_prose))
+    if filepath.suffix.lower() in _CODE_LANG_SUFFIXES:
+        findings.extend(_scan_lang_rules(rel_path, lines))
+    findings.extend(_scan_supply_chain(filepath, rel_path, lines))
+
     # Collapse duplicate findings on the same line and type (multiple patterns
-    # frequently match the same construct), keeping the highest severity.
+    # frequently match the same construct), keeping the highest severity. The
+    # severity rank is looked up defensively so an unexpected value never crashes.
     deduped: dict[tuple[int, str], dict[str, Any]] = {}
     for f in findings:
         key = (f["line"], f["type"])
         existing = deduped.get(key)
-        if existing is None or _SEVERITY_RANK[f["severity"]] > _SEVERITY_RANK[existing["severity"]]:
+        if existing is None or _SEVERITY_RANK.get(f["severity"], 0) > _SEVERITY_RANK.get(existing["severity"], 0):
             deduped[key] = f
     return list(deduped.values())
 
@@ -577,8 +711,10 @@ def main() -> None:
     skip_dirs = {".git", "__pycache__", ".venv", "venv", "node_modules", "dist", "build"}
 
     def _should_scan(filename: str) -> bool:
-        return (filename.endswith((".py", ".md", ".markdown", ".txt", ".yaml", ".yml")) or
+        return (filename.endswith((".py", ".md", ".markdown", ".txt", ".yaml", ".yml",
+                                   ".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx", ".sh", ".bash")) or
                 "SKILL" in filename.upper() or
+                filename.lower() == "dockerfile" or
                 filename in {"requirements.txt", "setup.py", "pyproject.toml", "Dockerfile"})
 
     # Collect target files. A single file passed via --path must be scanned
