@@ -24,10 +24,13 @@
 ## Ops / automation done (2026-07-16)
 - ci(scanner): `signature-pin.yml` auto-detects when ai-skill-signatures main advances, bumps `PINNED_SIGNATURES_SHA`, verifies tests, and opens a review PR (#13)
 
+## Ops / automation done (2026-07-16)
+- ci(scanner): package job builds + `twine check`s the wheel/sdist on every run; `release.yml` publishes to PyPI on version tags via OIDC trusted publishing (#15)
+
 ## Not Done
-- Make repositories public + add topics (use bulk script --make-public after validation)
+- Configure the PyPI trusted publisher + `pypi` environment, then tag a release (business/account step)
 - Add secret scanning / dependency review to CI
-- Publish as PyPI package + hosted demo
+- Hosted demo already live at cftcai.github.io/ai-skill-scanner-web
 
 ## Recommended Strategy
 Short-term: Finish scanner flag + schema validation and test the scan-url workflow end-to-end.

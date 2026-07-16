@@ -156,6 +156,23 @@ jobs:
 
 Extend the tool by adding custom regex rules or integrating YARA signatures and local LLM judges for semantic analysis.
 
+## Releasing
+
+The package builds as a standard wheel + sdist (`python -m build`), validated on every CI run. Publishing to PyPI is automated via `.github/workflows/release.yml` using PyPI **trusted publishing** (OIDC) — no API token is stored in the repo.
+
+One-time setup:
+1. On PyPI, add a trusted publisher for this project pointing at `cftcai/ai-skill-scanner`, workflow `release.yml`, environment `pypi`.
+2. In the repo, create a `pypi` environment (Settings → Environments).
+
+Then release by pushing a version tag:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+The workflow builds, runs `twine check`, and publishes.
+
 ## Contributing
 
 Issues and pull requests welcome. Focus areas: additional detection patterns, improved taint tracking, support for more skill formats, and container hardening.

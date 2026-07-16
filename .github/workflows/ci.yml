@@ -53,6 +53,19 @@ jobs:
       - name: Test Docker run (help)
         run: docker run --rm ai-skill-scanner:test --help
 
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build and validate the distribution
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+
   sarif:
     # Verifies the SARIF pipeline end to end and publishes the report as a
     # build artifact. We intentionally do NOT upload this self-scan to code
