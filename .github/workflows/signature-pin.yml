@@ -1,0 +1,69 @@
+name: Signature pin bump
+
+# Watches ai-skill-signatures. When its main advances past the SHA pinned in
+# scanner.py, this bumps PINNED_SIGNATURES_SHA, verifies the test suite passes
+# against the new signatures, and opens a PR for review. A maintainer still
+# reviews the signatures diff before merging.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'   # weekly, Monday 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compare pinned vs latest signatures SHA
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(python -c "import re;print(re.search(r'PINNED_SIGNATURES_SHA = \"([0-9a-f]+)\"', open('scanner.py').read()).group(1))")
+          latest=$(gh api repos/cftcai/ai-skill-signatures/commits/main --jq '.sha')
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest"   >> "$GITHUB_OUTPUT"
+          [ "$current" != "$latest" ] && echo "changed=true" >> "$GITHUB_OUTPUT" || echo "changed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Bump, verify, and open PR
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.check.outputs.latest }}
+          CURRENT: ${{ steps.check.outputs.current }}
+        run: |
+          set -euo pipefail
+          branch="auto/repin-${LATEST}"
+          # Skip if this bump PR already exists.
+          if gh pr list --head "$branch" --json number --jq '.[0].number' | grep -q .; then
+            echo "PR for $branch already open; nothing to do."; exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          python - <<'PY'
+          import os, re, pathlib
+          latest = os.environ["LATEST"]
+          p = pathlib.Path("scanner.py")
+          p.write_text(re.sub(r'PINNED_SIGNATURES_SHA = "[0-9a-f]+"',
+                              f'PINNED_SIGNATURES_SHA = "{latest}"', p.read_text()))
+          PY
+          pip install -e . >/dev/null
+          pip install pytest >/dev/null
+          pytest tests/ -q
+          git add scanner.py
+          git commit -m "chore: re-pin ai-skill-signatures to ${LATEST}"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore: re-pin ai-skill-signatures to ${LATEST}" \
+            --body "Automated re-pin. ai-skill-signatures \`main\` advanced from \`${CURRENT}\` to \`${LATEST}\`. The scanner test suite passes against the new signatures. **Review the signatures diff before merging.**"
