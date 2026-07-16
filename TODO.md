@@ -13,8 +13,13 @@
 - feat(workflow): scan-url.yml added for lightweight web backend (workflow_dispatch with url input)
 - GitHub Actions section reorganized; web frontend UX improved
 
+## Completed (2026-07-16, hardening + detection round)
+- harden(scanner): reject non-URL `--github-url` + `--` separator (git arg-injection); 2 MiB file cap + per-line length guard (ReDoS/OOM) (#7, #8)
+- feat(scanner): import-alias resolution so `from os import system` / `import subprocess as sp` cannot bypass AST detection (#10)
+- feat(scanner): rules are `(regex, id, severity, description)`; findings and SARIF now cite the rule id and use curated severities (#11)
+
 ## In Progress / Next
-- Deeper detection: import/alias resolution (`from os import system`), taint tracking to cut dual-use (env/subprocess) noise
+- Deeper detection: taint tracking to cut dual-use (env/subprocess) noise
 - Automate the signature re-pin (CI opens a PR bumping `PINNED_SIGNATURES_SHA` when ai-skill-signatures main advances)
 
 ## Not Done

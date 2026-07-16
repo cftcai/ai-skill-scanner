@@ -85,20 +85,21 @@ For GitHub URL scans the container needs temporary network access for git clone.
 
 The scanner performs static analysis across these vectors:
 
-- Dangerous Python execution (eval, exec, subprocess, pickle deserialization)
+- Dangerous Python execution (eval, exec, subprocess, pickle deserialization), including aliased and `from`-imports (`import subprocess as sp`, `from os import system`)
 - Network exfiltration and callback patterns (requests to non-allowlisted hosts, secret leakage)
 - Prompt injection and override instructions inside SKILL.md and markdown definitions
 - High-entropy obfuscated strings and decode chains
 - Supply chain indicators in requirements.txt, setup.py, and workflow files
 - File persistence attempts
 
-See the JSON report for per-finding severity (high/medium/low), line numbers, snippets, and recommendations.
+Each finding carries the rule id that fired, its curated severity (high/medium/low), the line number, a snippet, and a recommendation.
 
 ## Architecture
 
 - Pure stdlib implementation. No external dependencies at runtime.
-- AST traversal for precise Python call detection.
-- Regex + Shannon entropy for pattern and obfuscation discovery.
+- AST traversal for precise Python call detection, with import-alias resolution so aliased/`from` imports cannot bypass checks.
+- Rules are `(regex, id, severity, description)`; the matched rule's metadata flows through to every finding.
+- Regex + Shannon entropy for pattern and obfuscation discovery, scanned line-by-line with size/length caps to bound work on hostile input.
 - Special handling for skill definition files (SKILL.md).
 - Temporary directory cloning with automatic cleanup.
 - Structured JSON output for CI/CD ingestion or further automation.

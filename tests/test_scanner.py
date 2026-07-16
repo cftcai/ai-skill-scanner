@@ -106,6 +106,56 @@ def test_high_entropy_obfuscation():
         report = json.loads((Path(tmp)/"r.json").read_text())
         assert any(f["type"] == "high_entropy_obfuscation" for f in report["findings"])
 
+def test_aliased_and_from_imports_are_detected():
+    """`from os import system` and `import subprocess as sp` must not bypass AST detection."""
+    code = (
+        "from os import system as run_it\n"
+        "import subprocess as sp\n"
+        "from pickle import loads\n"
+        "def go(x):\n"
+        "    run_it('id')\n"
+        "    sp.Popen(['sh','-c','x'])\n"
+        "    loads(x)\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "aliased.py"
+        p.write_text(code)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--path", str(p), "--output", str(Path(tmp) / "r.json")],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr
+        report = json.loads((Path(tmp) / "r.json").read_text())
+        dangerous = [f for f in report["findings"] if f["type"] == "dangerous_code_execution"]
+        detected = {f["description"] for f in dangerous}
+        joined = " ".join(detected)
+        assert "os.system" in joined       # from os import system as run_it
+        assert "subprocess.Popen" in joined  # import subprocess as sp
+        assert "pickle.loads" in joined      # from pickle import loads
+
+
+def test_findings_carry_rule_metadata():
+    """suspicious_pattern findings must cite the rule id that fired."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "net.py"
+        # Network call on its own line (no URL literal) so only the network
+        # rule fires and the assertion is deterministic under dedup.
+        p.write_text("import requests\nu = get_url()\nrequests.post(u, json={})\n")
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent.parent / "scanner.py"),
+             "--path", str(p), "--output", str(Path(tmp) / "r.json")],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr
+        report = json.loads((Path(tmp) / "r.json").read_text())
+        sp = [f for f in report["findings"] if f["type"] == "suspicious_pattern"]
+        assert sp, "expected a suspicious_pattern finding"
+        assert all("rule_id" in f for f in sp)
+        # The network rule fired (built-in BUILTIN-NET or repo EX-002).
+        assert any(f["rule_id"] in {"BUILTIN-NET", "EX-002"} for f in sp)
+
+
 def test_github_url_argument_injection_rejected():
     """A --github-url that is not a real remote URL must be rejected before clone."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -169,11 +219,11 @@ def test_signature_pin_verification(tmp_path, monkeypatch):
     monkeypatch.setattr(scanner, "_git_head", lambda repo: "cafe1234")
 
     # Matching pin -> fetched rules are used.
-    assert scanner.load_signatures_from_repo(pinned_sha="cafe1234") is not scanner.EXFIL_PATTERNS
+    assert scanner.load_signatures_from_repo(pinned_sha="cafe1234") is not scanner.BUILTIN_RULES
     # Mismatched pin -> refuse fetched rules, fall back to built-ins.
-    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff") is scanner.EXFIL_PATTERNS
+    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff") is scanner.BUILTIN_RULES
     # Escape hatch -> use fetched rules despite mismatch.
-    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff", allow_unpinned=True) is not scanner.EXFIL_PATTERNS
+    assert scanner.load_signatures_from_repo(pinned_sha="0000ffff", allow_unpinned=True) is not scanner.BUILTIN_RULES
 
 
 def test_sarif_output_is_valid():
