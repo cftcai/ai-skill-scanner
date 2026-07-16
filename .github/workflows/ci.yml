@@ -23,8 +23,14 @@ jobs:
       - name: Install editable package
         run: pip install -e .
 
+      - name: Install test dependencies
+        run: pip install pytest
+
       - name: Syntax and import check
         run: python -c "import scanner; print('Import successful')"
+
+      - name: Run unit tests
+        run: pytest tests/ -q
 
       - name: Self-scan of repository
         run: |
